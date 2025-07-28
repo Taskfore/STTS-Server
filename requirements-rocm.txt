@@ -2,6 +2,9 @@
 
 chatterbox-tts==0.1.2
 
+# Speech-to-Text (STT)
+openai-whisper
+
 # Core Web Framework
 fastapi
 uvicorn[standard]

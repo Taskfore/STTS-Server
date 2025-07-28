@@ -62,6 +62,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         ),  # Directory for reference audio files for cloning.
         "default_voice_id": "default_sample.wav",  # Default voice file to use if none is specified.
     },
+    "stt_engine": {
+        "device": "auto",  # STT processing device: 'auto', 'cuda', 'mps', or 'cpu'.
+        "model_size": "base",  # Whisper model size: 'tiny', 'base', 'small', 'medium', 'large'
+        "language": "auto",  # Language code or 'auto' for detection
+    },
     "paths": {  # General configurable paths for the application.
         "model_cache": str(
             DEFAULT_MODEL_FILES_PATH
@@ -784,6 +789,28 @@ def get_default_voice_id() -> str:
     return config_manager.get_string(
         "tts_engine.default_voice_id",
         _get_default_from_structure("tts_engine.default_voice_id"),
+    )
+
+
+# STT Engine Settings Accessors
+def get_stt_device() -> str:
+    """Returns the resolved STT processing device ('cuda', 'mps', or 'cpu')."""
+    return config_manager.get_string(
+        "stt_engine.device", _get_default_from_structure("stt_engine.device")
+    )
+
+
+def get_stt_model_size() -> str:
+    """Returns the Whisper model size."""
+    return config_manager.get_string(
+        "stt_engine.model_size", _get_default_from_structure("stt_engine.model_size")
+    )
+
+
+def get_stt_language() -> str:
+    """Returns the STT language setting."""
+    return config_manager.get_string(
+        "stt_engine.language", _get_default_from_structure("stt_engine.language")
     )
 
 
