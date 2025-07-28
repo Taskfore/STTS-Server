@@ -72,7 +72,7 @@ import utils  # Utility functions
 from pydantic import BaseModel, Field
 
 # Import routers
-from routers import stt, conversation
+from routers import stt, conversation, websocket_stt
 
 
 class OpenAISpeechRequest(BaseModel):
@@ -220,6 +220,7 @@ app.add_middleware(
 # --- Include Routers ---
 app.include_router(stt.router)
 app.include_router(conversation.router)
+app.include_router(websocket_stt.router)
 
 # --- Static Files and HTML Templates ---
 ui_static_path = Path(__file__).parent / "ui"

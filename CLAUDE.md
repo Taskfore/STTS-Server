@@ -26,6 +26,20 @@ python server.py
 # API documentation at http://localhost:8004/docs
 ```
 
+### Testing
+```bash
+# Test API endpoints (no models required)
+python tests/test_api_endpoints.py
+
+# Test WebSocket STT (requires models loaded)
+python tests/test_websocket_stt.py
+
+# Manual testing via:
+# - Web UI at http://localhost:8004
+# - API documentation at http://localhost:8004/docs (Swagger UI)
+# - Direct API calls to `/stt`, `/conversation`, `/tts`, `/v1/audio/speech`
+```
+
 ### Docker Deployment
 ```bash
 # NVIDIA GPU
@@ -102,7 +116,12 @@ Transcription → Cleanup → JSON Response
 ```
 ├── engine.py              # TTS model loading & synthesis (global state)
 ├── stt_engine.py          # STT model with clean OOP pattern
-├── server.py              # FastAPI app with all endpoints
+├── server.py              # FastAPI app with core endpoints
+├── routers/               # FastAPI routers for organized endpoints
+│   ├── stt.py            # Speech-to-text endpoints
+│   ├── conversation.py   # STT→TTS pipeline endpoints
+│   └── websocket_stt.py  # Real-time WebSocket STT
+├── tests/                 # Test scripts and utilities
 ├── config.py              # Configuration management with defaults
 ├── utils.py               # Shared audio/text processing utilities
 ├── models.py              # Pydantic request/response models
@@ -117,6 +136,8 @@ Transcription → Cleanup → JSON Response
 **Primary Endpoints:**
 - `POST /tts` - Full-featured TTS with all parameters
 - `POST /stt` - Speech-to-text transcription  
+- `POST /conversation` - STT→TTS pipeline for speech-to-speech
+- `WebSocket /ws/transcribe` - Real-time continuous STT
 - `POST /v1/audio/speech` - OpenAI-compatible TTS endpoint
 
 **Management Endpoints:**
