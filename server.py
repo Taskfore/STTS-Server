@@ -64,14 +64,15 @@ import engine  # TTS Engine interface
 from stt_engine import STTEngine  # STT Engine class
 from models import (  # Pydantic models
     CustomTTSRequest,
-    STTRequest,
-    STTResponse,
     ErrorResponse,
     UpdateStatusResponse,
 )
 import utils  # Utility functions
 
 from pydantic import BaseModel, Field
+
+# Import routers
+from routers import stt, conversation
 
 
 class OpenAISpeechRequest(BaseModel):
@@ -113,11 +114,7 @@ startup_complete_event = threading.Event()  # For coordinating browser opening
 
 
 # --- Dependency Functions ---
-def get_stt_engine(request: Request) -> STTEngine:
-    """Dependency to get STT engine from app state."""
-    if not hasattr(request.app.state, 'stt_engine'):
-        raise HTTPException(status_code=503, detail="STT engine not initialized")
-    return request.app.state.stt_engine
+# STT engine dependency moved to routers
 
 
 def _delayed_browser_open(host: str, port: int):
@@ -219,6 +216,10 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+# --- Include Routers ---
+app.include_router(stt.router)
+app.include_router(conversation.router)
 
 # --- Static Files and HTML Templates ---
 ui_static_path = Path(__file__).parent / "ui"

@@ -128,3 +128,6 @@ class STTResponse(BaseModel):
     text: str = Field(..., description="The transcribed text from the audio.")
     language: Optional[str] = Field(None, description="Detected or specified language.")
     duration: Optional[float] = Field(None, description="Audio duration in seconds.")
+
+
+# Conversation models moved to routers - using Form parameters instead
