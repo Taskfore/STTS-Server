@@ -15,6 +15,9 @@ torchaudio==2.5.1
 # Install chatterbox from our Colab-compatible fork instead of PyPI
 git+https://github.com/devnen/chatterbox.git
 
+# Speech-to-Text (STT)
+openai-whisper
+
 # Core Web Framework
 fastapi
 uvicorn[standard]

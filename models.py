@@ -111,3 +111,23 @@ class UpdateStatusResponse(BaseModel):
         False,
         description="Indicates if a server restart is recommended or required for changes to take full effect.",
     )
+
+
+class STTRequest(BaseModel):
+    """Request model for speech-to-text transcription."""
+    
+    language: Optional[str] = Field(
+        None,
+        description="Language code for transcription (e.g., 'en', 'es') or None for auto-detection."
+    )
+
+
+class STTResponse(BaseModel):
+    """Response model for speech-to-text transcription."""
+    
+    text: str = Field(..., description="The transcribed text from the audio.")
+    language: Optional[str] = Field(None, description="Detected or specified language.")
+    duration: Optional[float] = Field(None, description="Audio duration in seconds.")
+
+
+# Conversation models moved to routers - using Form parameters instead

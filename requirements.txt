@@ -18,6 +18,10 @@ torchaudio==2.6.0               # Audio processing utilities for PyTorch
 # Chatterbox TTS engine - installed directly from GitHub
 chatterbox-tts==0.1.2
 
+# --- Speech-to-Text (STT) Application ---
+# OpenAI Whisper for speech transcription
+openai-whisper
+
 # --- Web Framework & Server ---
 fastapi                         # Modern async web framework
 uvicorn[standard]               # ASGI server with performance extras
