@@ -89,6 +89,26 @@ document.addEventListener('DOMContentLoaded', async function () {
     const generationWarningAcknowledgeBtn = document.getElementById('generation-warning-acknowledge');
     const hideGenerationWarningCheckbox = document.getElementById('hide-generation-warning-checkbox');
 
+    // Voice Conversation Elements
+    const startConversationBtn = document.getElementById('start-conversation-btn');
+    const stopConversationBtn = document.getElementById('stop-conversation-btn');
+    const conversationStatus = document.getElementById('conversation-status');
+    const audioLevelContainer = document.getElementById('audio-level-container');
+    const audioLevelBar = document.getElementById('audio-level-bar');
+    const conversationFileInput = document.getElementById('conversation-file-input');
+    const processConversationFileBtn = document.getElementById('process-conversation-file-btn');
+    const conversationOutputContainer = document.getElementById('conversation-output-container');
+    const conversationAudioPlayerContainer = document.getElementById('conversation-audio-player-container');
+
+    // Voice Conversation State
+    let mediaRecorder = null;
+    let audioChunks = [];
+    let isRecording = false;
+    let audioContext = null;
+    let analyser = null;
+    let microphone = null;
+    let dataArray = null;
+
 
     // Handle voice mode selection visual feedback
     const voiceModeOptions = document.querySelectorAll('.voice-mode-option');
@@ -1027,6 +1047,298 @@ document.addEventListener('DOMContentLoaded', async function () {
                 predefinedVoiceRefreshButton.disabled = false;
                 predefinedVoiceRefreshButton.innerHTML = originalButtonIcon;
             }
+        });
+    }
+
+    // --- Voice Conversation Functions ---
+    
+    // Initialize audio level monitoring
+    function initAudioLevelMonitoring(stream) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = audioContext.createAnalyser();
+        microphone = audioContext.createMediaStreamSource(stream);
+        analyser.fftSize = 256;
+        const bufferLength = analyser.frequencyBinCount;
+        dataArray = new Uint8Array(bufferLength);
+        
+        microphone.connect(analyser);
+        
+        function updateAudioLevel() {
+            if (!isRecording) return;
+            
+            analyser.getByteFrequencyData(dataArray);
+            let sum = 0;
+            for (let i = 0; i < bufferLength; i++) {
+                sum += dataArray[i];
+            }
+            const average = sum / bufferLength;
+            const percentage = (average / 255) * 100;
+            
+            if (audioLevelBar) {
+                audioLevelBar.style.width = `${percentage}%`;
+                if (percentage > 60) {
+                    audioLevelBar.className = 'bg-red-500 h-2 rounded-full transition-all duration-100';
+                } else if (percentage > 30) {
+                    audioLevelBar.className = 'bg-yellow-500 h-2 rounded-full transition-all duration-100';
+                } else {
+                    audioLevelBar.className = 'bg-green-500 h-2 rounded-full transition-all duration-100';
+                }
+            }
+            
+            requestAnimationFrame(updateAudioLevel);
+        }
+        
+        updateAudioLevel();
+    }
+
+    // Start recording conversation
+    async function startConversation() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                audio: {
+                    channelCount: 1,
+                    sampleRate: 16000,
+                    echoCancellation: true,
+                    noiseSuppression: true
+                } 
+            });
+            
+            audioChunks = [];
+            mediaRecorder = new MediaRecorder(stream, {
+                mimeType: 'audio/webm'
+            });
+            
+            mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    audioChunks.push(event.data);
+                }
+            };
+            
+            mediaRecorder.onstop = async () => {
+                const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                await processConversationAudio(audioBlob, 'microphone');
+                
+                // Stop all tracks to release microphone
+                stream.getTracks().forEach(track => track.stop());
+                
+                // Clean up audio context
+                if (audioContext) {
+                    audioContext.close();
+                    audioContext = null;
+                }
+            };
+            
+            initAudioLevelMonitoring(stream);
+            mediaRecorder.start();
+            isRecording = true;
+            
+            if (startConversationBtn) startConversationBtn.disabled = true;
+            if (stopConversationBtn) stopConversationBtn.disabled = false;
+            if (conversationStatus) conversationStatus.textContent = 'Recording... Click Stop when finished.';
+            if (audioLevelContainer) audioLevelContainer.classList.remove('hidden');
+            
+        } catch (error) {
+            console.error('Error starting conversation:', error);
+            showNotification(`Microphone access failed: ${error.message}`, 'error');
+        }
+    }
+
+    // Stop recording conversation
+    function stopConversation() {
+        if (mediaRecorder && isRecording) {
+            isRecording = false;
+            mediaRecorder.stop();
+            
+            if (startConversationBtn) startConversationBtn.disabled = false;
+            if (stopConversationBtn) stopConversationBtn.disabled = true;
+            if (conversationStatus) conversationStatus.textContent = 'Processing...';
+            if (audioLevelContainer) audioLevelContainer.classList.add('hidden');
+        }
+    }
+
+    // Process conversation audio (from microphone or file upload)
+    async function processConversationAudio(audioBlob, source = 'file') {
+        try {
+            showLoadingOverlay('Processing conversation...', 'Transcribing speech and generating response...');
+            
+            // Create FormData for the conversation endpoint
+            const formData = new FormData();
+            
+            // Convert webm to wav for better compatibility if from microphone
+            if (source === 'microphone' && audioBlob.type === 'audio/webm') {
+                formData.append('audio_file', audioBlob, 'recording.webm');
+            } else {
+                formData.append('audio_file', audioBlob, audioBlob.name || 'audio.wav');
+            }
+            
+            // Use predefined voice mode with default voice for simplicity
+            formData.append('voice_mode', 'predefined');
+            formData.append('output_format', 'mp3');
+            
+            const response = await fetch(`${API_BASE_URL}/conversation`, {
+                method: 'POST',
+                body: formData
+            });
+            
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.detail || `HTTP ${response.status}`);
+            }
+            
+            // Get the audio response
+            const responseBlob = await response.blob();
+            
+            // Create audio player for response
+            createConversationAudioPlayer(responseBlob);
+            
+            if (conversationStatus) conversationStatus.textContent = 'Conversation complete!';
+            showNotification('Conversation processed successfully!', 'success');
+            
+        } catch (error) {
+            console.error('Error processing conversation:', error);
+            showNotification(`Conversation failed: ${error.message}`, 'error');
+            if (conversationStatus) conversationStatus.textContent = 'Ready to start conversation.';
+        } finally {
+            hideLoadingOverlay();
+        }
+    }
+
+    // Create audio player for conversation response
+    function createConversationAudioPlayer(audioBlob) {
+        if (!conversationAudioPlayerContainer) return;
+        
+        // Clear previous audio player
+        conversationAudioPlayerContainer.innerHTML = '';
+        
+        // Create blob URL
+        const audioBlobUrl = URL.createObjectURL(audioBlob);
+        
+        // Create audio player HTML (reusing existing styles)
+        const playerHTML = `
+            <div class="audio-player-wrapper">
+                <div class="audio-waveform-container">
+                    <div id="conversation-waveform"></div>
+                </div>
+                <div class="audio-controls-row">
+                    <div class="audio-control-group">
+                        <button type="button" id="conversation-play-pause-btn" class="audio-control-btn" title="Play/Pause">
+                            <svg class="play-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M8 5v14l11-7z"/>
+                            </svg>
+                            <svg class="pause-icon hidden" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+                            </svg>
+                        </button>
+                        <span class="audio-time-display">
+                            <span id="conversation-current-time">0:00</span> / 
+                            <span id="conversation-total-time">0:00</span>
+                        </span>
+                    </div>
+                    <div class="audio-control-group">
+                        <a href="${audioBlobUrl}" download="conversation_response.mp3" class="btn-secondary text-sm">
+                            Download Response
+                        </a>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        conversationAudioPlayerContainer.innerHTML = playerHTML;
+        
+        // Initialize waveform
+        const conversationWavesurfer = WaveSurfer.create({
+            container: '#conversation-waveform',
+            waveColor: 'rgb(148, 163, 184)',
+            progressColor: 'rgb(79, 70, 229)',
+            backgroundColor: 'transparent',
+            height: 60,
+            normalize: true,
+            responsive: true
+        });
+        
+        conversationWavesurfer.load(audioBlobUrl);
+        
+        // Add play/pause functionality
+        const playPauseBtn = document.getElementById('conversation-play-pause-btn');
+        const currentTimeSpan = document.getElementById('conversation-current-time');
+        const totalTimeSpan = document.getElementById('conversation-total-time');
+        
+        conversationWavesurfer.on('ready', () => {
+            const duration = conversationWavesurfer.getDuration();
+            if (totalTimeSpan) totalTimeSpan.textContent = formatTime(duration);
+        });
+        
+        conversationWavesurfer.on('audioprocess', () => {
+            const currentTime = conversationWavesurfer.getCurrentTime();
+            if (currentTimeSpan) currentTimeSpan.textContent = formatTime(currentTime);
+        });
+        
+        conversationWavesurfer.on('finish', () => {
+            if (playPauseBtn) {
+                const playIcon = playPauseBtn.querySelector('.play-icon');
+                const pauseIcon = playPauseBtn.querySelector('.pause-icon');
+                if (playIcon) playIcon.classList.remove('hidden');
+                if (pauseIcon) pauseIcon.classList.add('hidden');
+            }
+        });
+        
+        if (playPauseBtn) {
+            playPauseBtn.addEventListener('click', () => {
+                conversationWavesurfer.playPause();
+                const playIcon = playPauseBtn.querySelector('.play-icon');
+                const pauseIcon = playPauseBtn.querySelector('.pause-icon');
+                
+                if (conversationWavesurfer.isPlaying()) {
+                    if (playIcon) playIcon.classList.add('hidden');
+                    if (pauseIcon) pauseIcon.classList.remove('hidden');
+                } else {
+                    if (playIcon) playIcon.classList.remove('hidden');
+                    if (pauseIcon) pauseIcon.classList.add('hidden');
+                }
+            });
+        }
+        
+        // Show the output container
+        if (conversationOutputContainer) {
+            conversationOutputContainer.classList.remove('hidden');
+        }
+    }
+
+    // Format time helper function
+    function formatTime(seconds) {
+        const minutes = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${minutes}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    // --- Event Listeners for Voice Conversation ---
+    
+    if (startConversationBtn) {
+        startConversationBtn.addEventListener('click', startConversation);
+    }
+    
+    if (stopConversationBtn) {
+        stopConversationBtn.addEventListener('click', stopConversation);
+    }
+    
+    // File upload conversation processing
+    if (conversationFileInput) {
+        conversationFileInput.addEventListener('change', () => {
+            if (processConversationFileBtn) {
+                processConversationFileBtn.disabled = conversationFileInput.files.length === 0;
+            }
+        });
+    }
+    
+    if (processConversationFileBtn) {
+        processConversationFileBtn.addEventListener('click', async () => {
+            const file = conversationFileInput?.files?.[0];
+            if (!file) {
+                showNotification('Please select an audio file first.', 'warning');
+                return;
+            }
+            
+            await processConversationAudio(file, 'file');
         });
     }
 
