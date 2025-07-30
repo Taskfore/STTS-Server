@@ -1094,6 +1094,11 @@ document.addEventListener('DOMContentLoaded', async function () {
     // Start recording conversation
     async function startConversation() {
         try {
+            // Check if MediaDevices API is available
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                throw new Error('Microphone access requires HTTPS or localhost. Please access via https:// or http://localhost:8004');
+            }
+            
             const stream = await navigator.mediaDevices.getUserMedia({ 
                 audio: {
                     channelCount: 1,
