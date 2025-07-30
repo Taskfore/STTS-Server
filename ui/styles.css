@@ -2128,7 +2128,8 @@ input[type="range"].slider-base::-moz-range-thumb {
 
 /* --- Voice Mode Selection Styling --- */
 
-.voice-mode-option {
+.voice-mode-option,
+.conversation-mode-option {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -2149,15 +2150,17 @@ input[type="range"].slider-base::-moz-range-thumb {
     position: relative;
 }
 
-.voice-mode-option:hover {
+.voice-mode-option:hover,
+.conversation-mode-option:hover {
     border-color: #c7d2fe;
     /* hover:border-indigo-300 */
     background-color: #f8fafc;
     /* hover:bg-slate-50 */
 }
 
-/* Selected state for voice mode */
-.voice-mode-option.selected {
+/* Selected state for voice mode and conversation mode */
+.voice-mode-option.selected,
+.conversation-mode-option.selected {
     border-color: #4f46e5;
     /* border-indigo-600 */
     background-color: #eef2ff;
@@ -2253,7 +2256,8 @@ input[type="range"].slider-base::-moz-range-thumb {
     /* hover:border-slate-500 */
 }
 
-.dark .voice-mode-option {
+.dark .voice-mode-option,
+.dark .conversation-mode-option {
     background-color: #1e293b;
     /* bg-slate-800 */
     border-color: #475569;
@@ -2262,14 +2266,16 @@ input[type="range"].slider-base::-moz-range-thumb {
     /* text-slate-400 */
 }
 
-.dark .voice-mode-option:hover {
+.dark .voice-mode-option:hover,
+.dark .conversation-mode-option:hover {
     background-color: #334155;
     /* hover:bg-slate-700 */
     border-color: #64748b;
     /* hover:border-slate-500 */
 }
 
-.dark .voice-mode-option.selected {
+.dark .voice-mode-option.selected,
+.dark .conversation-mode-option.selected {
     background-color: rgba(99, 102, 241, 0.1);
     /* bg-indigo-500/10 */
     border-color: #6366f1;

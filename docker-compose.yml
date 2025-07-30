@@ -9,7 +9,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "${PORT:-8004}:8004"
+      - "${PORT:-4000}:8004"
     volumes:
       # Mount local config file for persistence
       - ./config.yaml:/app/config.yaml
