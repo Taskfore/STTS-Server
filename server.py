@@ -66,6 +66,7 @@ from models import (  # Pydantic models
     CustomTTSRequest,
     ErrorResponse,
     UpdateStatusResponse,
+    STTResponse,
 )
 import utils  # Utility functions
 
@@ -73,6 +74,7 @@ from pydantic import BaseModel, Field
 
 # Import routers
 from routers import stt, conversation, websocket_stt
+from routers.stt import get_stt_engine
 
 
 class OpenAISpeechRequest(BaseModel):
