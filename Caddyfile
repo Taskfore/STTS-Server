@@ -1,0 +1,49 @@
+# Caddyfile for Chatterbox TTS Server with self-signed HTTPS
+# This configuration provides HTTPS access via IP address using self-signed certificates
+
+# Listen on all interfaces for HTTPS traffic
+:443 {
+    # Enable self-signed certificates for IP access
+    tls internal
+    
+    # Reverse proxy to the TTS server container
+    reverse_proxy chatterbox-tts-server:8004
+    
+    # Enable request logging
+    log {
+        output stdout
+        format console
+        level INFO
+    }
+    
+    # Add security headers
+    header {
+        # Prevent MIME type sniffing
+        X-Content-Type-Options nosniff
+        # Enable XSS protection
+        X-XSS-Protection "1; mode=block"
+        # Prevent clickjacking
+        X-Frame-Options DENY
+        # Force HTTPS for future requests (optional, can be removed if needed)
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    }
+    
+    # Handle WebSocket connections for real-time STT
+    @websockets {
+        header Connection *Upgrade*
+        header Upgrade websocket
+    }
+    reverse_proxy @websockets chatterbox-tts-server:8004
+}
+
+# Optional: Redirect HTTP to HTTPS
+:80 {
+    # Redirect all HTTP traffic to HTTPS
+    redir https://{host}{uri} permanent
+    
+    log {
+        output stdout
+        format console
+        level INFO
+    }
+}

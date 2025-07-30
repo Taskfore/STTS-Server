@@ -41,22 +41,54 @@ python tests/test_websocket_stt.py
 ```
 
 ### Docker Deployment
+
+#### HTTPS Deployment (Recommended)
+All Docker configurations now include Caddy reverse proxy for automatic HTTPS with self-signed certificates:
+
 ```bash
-# NVIDIA GPU
+# NVIDIA GPU with HTTPS
 docker compose up -d --build
 
-# AMD ROCm GPU  
+# AMD ROCm GPU with HTTPS
 docker compose -f docker-compose-rocm.yml up -d --build
 
-# CPU-only
+# CPU-only with HTTPS
 docker compose -f docker-compose-cpu.yml up -d --build
 ```
 
+**Access URLs:**
+- **HTTPS**: `https://YOUR_SERVER_IP` (self-signed certificate, accept browser warning)
+- **HTTP**: `http://YOUR_SERVER_IP` (automatically redirects to HTTPS)
+- **API Documentation**: `https://YOUR_SERVER_IP/docs`
+
+**Certificate Notes:**
+- Self-signed certificates will show browser security warnings
+- Click "Advanced" → "Proceed to [IP address]" to accept
+- Certificates are automatically generated and stored in Docker volumes
+- For production, consider using a domain name with Let's Encrypt certificates
+
 ### Testing
-No formal test suite exists. Test manually via:
-- Web UI at http://localhost:8004
-- API endpoints at http://localhost:8004/docs (Swagger UI)
-- Direct API calls to `/tts` and `/v1/audio/speech`
+
+#### Local Development Testing
+```bash
+# Test API endpoints (no models required)
+python tests/test_api_endpoints.py
+
+# Test WebSocket STT (requires models loaded)
+python tests/test_websocket_stt.py
+
+# Manual testing via:
+# - Web UI at http://localhost:8004
+# - API documentation at http://localhost:8004/docs (Swagger UI)
+# - Direct API calls to `/stt`, `/conversation`, `/tts`, `/v1/audio/speech`
+```
+
+#### Docker/HTTPS Testing
+When using Docker with HTTPS, test via:
+- **Web UI**: `https://YOUR_SERVER_IP`
+- **API Documentation**: `https://YOUR_SERVER_IP/docs` (Swagger UI)
+- **WebSocket STT**: `wss://YOUR_SERVER_IP/ws/transcribe`
+- **Direct API calls** to HTTPS endpoints
 
 ## High-Level Architecture
 

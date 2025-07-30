@@ -1,12 +1,31 @@
 version: '3.8'
 
 services:
+  # Caddy reverse proxy for HTTPS
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - chatterbox-network
+    depends_on:
+      - chatterbox-tts-server
+
   chatterbox-tts-server:
     build:
       context: .
       dockerfile: Dockerfile.rocm
-    ports:
-      - "${PORT:-8004}:8004"
+    # Remove external port exposure - only accessible via Caddy
+    expose:
+      - "8004"
+    networks:
+      - chatterbox-network
     volumes:
       # Mount local config file for persistence
       - ./config.yaml:/app/config.yaml
@@ -16,6 +35,8 @@ services:
       - ./outputs:/app/outputs
       - ./logs:/app/logs
       - hf_cache:/app/hf_cache
+    networks:
+      - chatterbox-network
 
     # --- ROCm GPU Access ---
     # Standard ROCm device access - required for AMD GPU acceleration
@@ -48,3 +69,10 @@ services:
 
 volumes:
   hf_cache:
+  caddy_data:
+  caddy_config:
+
+# Define the network for service communication
+networks:
+  chatterbox-network:
+    driver: bridge

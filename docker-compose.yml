@@ -1,6 +1,22 @@
 version: '3.8'
 
 services:
+  # Caddy reverse proxy for HTTPS
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - chatterbox-network
+    depends_on:
+      - chatterbox-tts-server
+
   chatterbox-tts-server:
     build:
       args:
@@ -8,8 +24,11 @@ services:
         - RUNTIME=nvidia
       context: .
       dockerfile: Dockerfile
-    ports:
-      - "${PORT:-4000}:8004"
+    # Remove external port exposure - only accessible via Caddy
+    expose:
+      - "8004"
+    networks:
+      - chatterbox-network
     volumes:
       # Mount local config file for persistence
       - ./config.yaml:/app/config.yaml
@@ -46,6 +65,13 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
-# Define the named volume for the Hugging Face cache
+# Define the named volumes
 volumes:
   hf_cache:
+  caddy_data:
+  caddy_config:
+
+# Define the network for service communication
+networks:
+  chatterbox-network:
+    driver: bridge
