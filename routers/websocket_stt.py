@@ -8,7 +8,7 @@ import threading
 import queue
 from typing import Optional
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Request
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 import numpy as np
 
 from stt_engine import STTEngine
@@ -18,11 +18,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ws", tags=["WebSocket STT"])
 
 
-def get_stt_engine(request: Request) -> STTEngine:
-    """Dependency to get STT engine from app state."""
-    if not hasattr(request.app.state, 'stt_engine'):
-        raise Exception("STT engine not initialized")
-    return request.app.state.stt_engine
 
 
 class AudioBuffer:
@@ -135,8 +130,7 @@ class RealtimeSTT:
 @router.websocket("/transcribe")
 async def websocket_transcribe(
     websocket: WebSocket,
-    language: Optional[str] = None,
-    stt_engine: STTEngine = Depends(get_stt_engine)
+    language: Optional[str] = None
 ):
     """
     Real-time speech transcription via WebSocket.
@@ -145,6 +139,17 @@ async def websocket_transcribe(
     Returns JSON messages with transcription results.
     """
     await websocket.accept()
+    
+    # Get STT engine from app state
+    if not hasattr(websocket.app.state, 'stt_engine'):
+        await websocket.send_json({
+            "type": "error",
+            "message": "STT engine not initialized"
+        })
+        await websocket.close()
+        return
+    
+    stt_engine = websocket.app.state.stt_engine
     
     if not stt_engine.model_loaded:
         await websocket.send_json({
