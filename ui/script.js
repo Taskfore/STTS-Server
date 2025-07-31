@@ -1147,6 +1147,14 @@ document.addEventListener('DOMContentLoaded', async function () {
     // Start conversation (handles both record and real-time modes)
     async function startConversation() {
         try {
+            // Clear previous conversation output
+            if (conversationOutputContainer) {
+                conversationOutputContainer.classList.add('hidden');
+            }
+            if (conversationAudioPlayerContainer) {
+                conversationAudioPlayerContainer.innerHTML = '';
+            }
+            
             // Check if MediaDevices API is available
             if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
                 throw new Error('Microphone access requires HTTPS or localhost. Please access via https:// or http://localhost:8004');
@@ -1387,6 +1395,11 @@ document.addEventListener('DOMContentLoaded', async function () {
             
             // Create audio player for response
             createConversationAudioPlayer(responseBlob);
+            
+            // Ensure the conversation output container is visible
+            if (conversationOutputContainer) {
+                conversationOutputContainer.classList.remove('hidden');
+            }
             
             if (conversationStatus) conversationStatus.textContent = 'Conversation complete!';
             showNotification('Conversation processed successfully!', 'success');

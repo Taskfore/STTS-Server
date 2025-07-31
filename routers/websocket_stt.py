@@ -62,8 +62,10 @@ class RealtimeSTT:
     async def process_audio_chunk(self, audio_data: bytes) -> Optional[str]:
         """Process incoming audio chunk and return transcription if available."""
         try:
-            # Convert bytes to numpy array (assuming 16-bit PCM, 16kHz)
-            audio_np = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
+            # Convert WebM audio data to numpy array
+            audio_np = await self._decode_webm_audio(audio_data)
+            if audio_np is None or len(audio_np) == 0:
+                return None
             
             # Add to buffer
             self.audio_buffer.add_audio(audio_np)
@@ -102,6 +104,74 @@ class RealtimeSTT:
             logger.error(f"Error processing audio chunk: {e}")
             self.processing = False
             return None
+    
+    async def _decode_webm_audio(self, webm_data: bytes) -> Optional[np.ndarray]:
+        """Decode WebM audio data to numpy array."""
+        webm_path = None
+        pcm_path = None
+        
+        try:
+            import tempfile
+            import subprocess
+            import os
+            
+            # Save WebM data to temporary file
+            with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as webm_file:
+                webm_file.write(webm_data)
+                webm_path = webm_file.name
+            
+            # Convert to raw PCM using ffmpeg
+            with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as pcm_file:
+                pcm_path = pcm_file.name
+            
+            # Use ffmpeg to decode WebM to 16kHz mono 16-bit PCM
+            cmd = [
+                'ffmpeg', '-i', webm_path,
+                '-ar', '16000',  # Sample rate 16kHz
+                '-ac', '1',      # Mono
+                '-f', 's16le',   # 16-bit little-endian PCM
+                '-loglevel', 'error',  # Suppress ffmpeg output
+                '-y', pcm_path   # Overwrite output
+            ]
+            
+            # Run ffmpeg with suppressed output
+            result = subprocess.run(
+                cmd, 
+                capture_output=True, 
+                text=False,
+                timeout=5  # 5 second timeout for real-time processing
+            )
+            
+            if result.returncode != 0:
+                logger.warning(f"ffmpeg failed to decode WebM audio chunk")
+                return None
+            
+            # Read the PCM data
+            with open(pcm_path, 'rb') as f:
+                pcm_data = f.read()
+            
+            if len(pcm_data) == 0:
+                return None
+            
+            # Convert to numpy array
+            audio_np = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
+            return audio_np
+            
+        except subprocess.TimeoutExpired:
+            logger.warning("ffmpeg timeout while decoding WebM audio chunk")
+            return None
+        except Exception as e:
+            logger.error(f"Error decoding WebM audio: {e}")
+            return None
+        finally:
+            # Clean up temporary files
+            try:
+                if webm_path and os.path.exists(webm_path):
+                    os.unlink(webm_path)
+                if pcm_path and os.path.exists(pcm_path):
+                    os.unlink(pcm_path)
+            except Exception as cleanup_error:
+                logger.warning(f"Error cleaning up temp files: {cleanup_error}")
     
     def _transcribe_audio(self, audio_data: np.ndarray) -> Optional[str]:
         """Transcribe audio data using STT engine."""
