@@ -6,7 +6,7 @@
     # Enable self-signed certificates for IP access
     tls internal
     
-    # Reverse proxy to the TTS server container
+    # Reverse proxy to the TTS server container (handles both HTTP and WebSocket)
     reverse_proxy chatterbox-tts-server:8004
     
     # Enable request logging
@@ -27,13 +27,6 @@
         # Force HTTPS for future requests (optional, can be removed if needed)
         Strict-Transport-Security "max-age=31536000; includeSubDomains"
     }
-    
-    # Handle WebSocket connections for real-time STT
-    @websockets {
-        header Connection *Upgrade*
-        header Upgrade websocket
-    }
-    reverse_proxy @websockets chatterbox-tts-server:8004
 }
 
 # Optional: Redirect HTTP to HTTPS
