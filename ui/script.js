@@ -1423,37 +1423,44 @@ document.addEventListener('DOMContentLoaded', async function () {
         // Create blob URL
         const audioBlobUrl = URL.createObjectURL(audioBlob);
         
-        // Create audio player HTML with HTML5 audio fallback
+        // Create audio player HTML with HTML5 audio fallback (using existing CSS classes)
         const playerHTML = `
-            <div class="audio-player-wrapper">
-                <div class="audio-waveform-container">
-                    <div id="conversation-waveform"></div>
-                    <!-- HTML5 Audio Fallback (hidden by default, shown if WaveSurfer fails) -->
-                    <audio id="conversation-fallback-audio" controls class="hidden w-full mt-2" preload="metadata">
-                        <source src="${audioBlobUrl}" type="audio/mpeg">
-                        <source src="${audioBlobUrl}" type="audio/wav">
-                        Your browser does not support the audio element.
-                    </audio>
-                </div>
-                <div class="audio-controls-row">
-                    <div class="audio-control-group">
-                        <button type="button" id="conversation-play-pause-btn" class="audio-control-btn" title="Play/Pause">
-                            <svg class="play-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-                                <path d="M8 5v14l11-7z"/>
-                            </svg>
-                            <svg class="pause-icon hidden" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-                                <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
-                            </svg>
-                        </button>
-                        <span class="audio-time-display">
+            <div class="audio-player-card">
+                <div class="p-6 sm:p-8">
+                    <h3 class="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-4">AI Response</h3>
+                    <div class="mb-5">
+                        <div id="conversation-waveform" class="waveform-container"></div>
+                        <!-- HTML5 Audio Fallback (hidden by default, shown if WaveSurfer fails) -->
+                        <audio id="conversation-fallback-audio" controls class="hidden w-full mt-2" preload="metadata">
+                            <source src="${audioBlobUrl}" type="audio/mpeg">
+                            <source src="${audioBlobUrl}" type="audio/wav">
+                            Your browser does not support the audio element.
+                        </audio>
+                    </div>
+                    <div class="audio-player-controls">
+                        <div class="audio-player-buttons">
+                            <button type="button" id="conversation-play-pause-btn" class="btn-primary flex items-center" title="Play/Pause">
+                                <svg class="play-icon w-5 h-5 mr-1.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M2 10a8 8 0 1 1 16 0 8 8 0 0 1-16 0Zm6.39-2.908a.75.75 0 0 1 .766.027l3.5 2.25a.75.75 0 0 1 0 1.262l-3.5 2.25A.75.75 0 0 1 8 12.25v-4.5a.75.75 0 0 1 .39-.658Z" clip-rule="evenodd" />
+                                </svg>
+                                <svg class="pause-icon w-5 h-5 mr-1.5 hidden" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M2 10a8 8 0 1 1 16 0 8 8 0 0 1-16 0Zm5-3.25A.75.75 0 0 1 8 6.75v6.5a.75.75 0 0 1-1.5 0v-6.5A.75.75 0 0 1 7 6.75Zm4 0a.75.75 0 0 1 .75.75v6.5a.75.75 0 0 1-1.5 0v-6.5a.75.75 0 0 1 .75-.75Z" clip-rule="evenodd" />
+                                </svg>
+                                <span id="conversation-play-text">Play</span>
+                            </button>
+                            <a href="${audioBlobUrl}" download="conversation_response.mp3" class="btn-secondary flex items-center ml-2">
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5 mr-1.5">
+                                    <path d="M10.75 2.75a.75.75 0 0 0-1.5 0v8.614L6.295 8.235a.75.75 0 1 0-1.09 1.03l4.25 4.5a.75.75 0 0 0 1.09 0l4.25-4.5a.75.75 0 0 0-1.09-1.03L10.75 11.364V2.75Z" />
+                                    <path d="M3.5 12.75a.75.75 0 0 0-1.5 0v2.5A2.75 2.75 0 0 0 4.75 18h10.5A2.75 2.75 0 0 0 18 15.25v-2.5a.75.75 0 0 0-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5Z" />
+                                </svg>
+                                <span>Download</span>
+                            </a>
+                        </div>
+                        <div class="audio-player-info text-xs sm:text-sm">
                             <span id="conversation-current-time">0:00</span> / 
                             <span id="conversation-total-time">0:00</span>
-                        </span>
-                    </div>
-                    <div class="audio-control-group">
-                        <a href="${audioBlobUrl}" download="conversation_response.mp3" class="btn-secondary text-sm">
-                            Download Response
-                        </a>
+                            <span class="mx-1">•</span> Duration: <span id="conversation-duration">--</span>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1497,8 +1504,10 @@ document.addEventListener('DOMContentLoaded', async function () {
                     if (playPauseBtn) {
                         const playIcon = playPauseBtn.querySelector('.play-icon');
                         const pauseIcon = playPauseBtn.querySelector('.pause-icon');
+                        const playText = playPauseBtn.querySelector('#conversation-play-text');
                         if (playIcon) playIcon.classList.remove('hidden');
                         if (pauseIcon) pauseIcon.classList.add('hidden');
+                        if (playText) playText.textContent = 'Play';
                     }
                 });
                 
@@ -1508,13 +1517,16 @@ document.addEventListener('DOMContentLoaded', async function () {
                         conversationWavesurfer.playPause();
                         const playIcon = playPauseBtn.querySelector('.play-icon');
                         const pauseIcon = playPauseBtn.querySelector('.pause-icon');
+                        const playText = playPauseBtn.querySelector('#conversation-play-text');
                         
                         if (conversationWavesurfer.isPlaying()) {
                             if (playIcon) playIcon.classList.add('hidden');
                             if (pauseIcon) pauseIcon.classList.remove('hidden');
+                            if (playText) playText.textContent = 'Pause';
                         } else {
                             if (playIcon) playIcon.classList.remove('hidden');
                             if (pauseIcon) pauseIcon.classList.add('hidden');
+                            if (playText) playText.textContent = 'Play';
                         }
                     });
                 }
