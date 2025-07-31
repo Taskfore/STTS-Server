@@ -113,6 +113,23 @@ document.addEventListener('DOMContentLoaded', async function () {
     const clearTranscriptionBtn = document.getElementById('clear-transcription-btn');
     const generateSpeechFromTranscriptionBtn = document.getElementById('generate-speech-from-transcription-btn');
     const transcriptionWordCount = document.getElementById('transcription-word-count');
+    
+    // Conversation TTS Controls
+    const conversationVoiceModeRadios = document.querySelectorAll('input[name="conversation_voice_mode"]');
+    const conversationPredefinedVoiceOptions = document.getElementById('conversation-predefined-voice-options');
+    const conversationPredefinedVoiceSelect = document.getElementById('conversation-predefined-voice-select');
+    const conversationCloneOptions = document.getElementById('conversation-clone-options');
+    const conversationCloneReferenceSelect = document.getElementById('conversation-clone-reference-select');
+    const conversationTemperatureSlider = document.getElementById('conversation-temperature');
+    const conversationTemperatureValue = document.getElementById('conversation-temperature-value');
+    const conversationExaggerationSlider = document.getElementById('conversation-exaggeration');
+    const conversationExaggerationValue = document.getElementById('conversation-exaggeration-value');
+    const conversationCfgWeightSlider = document.getElementById('conversation-cfg-weight');
+    const conversationCfgWeightValue = document.getElementById('conversation-cfg-weight-value');
+    const conversationSpeedFactorSlider = document.getElementById('conversation-speed-factor');
+    const conversationSpeedFactorValue = document.getElementById('conversation-speed-factor-value');
+    const conversationSeedInput = document.getElementById('conversation-seed');
+    const conversationOutputFormatSelect = document.getElementById('conversation-output-format');
     const startBtnText = document.getElementById('start-btn-text');
 
     // Voice Conversation State (existing)
@@ -389,6 +406,11 @@ document.addEventListener('DOMContentLoaded', async function () {
             currentVoiceMode = 'predefined';
         }
         toggleVoiceOptionsDisplay();
+        
+        // Initialize conversation voice mode
+        const conversationVoiceMode = document.querySelector('input[name="conversation_voice_mode"]:checked')?.value || 'predefined';
+        toggleConversationVoiceMode(conversationVoiceMode);
+        
         if (seedInput && currentUiState.last_seed !== undefined) seedInput.value = currentUiState.last_seed;
         else if (seedInput && currentConfig?.generation_defaults?.seed !== undefined) seedInput.value = currentConfig.generation_defaults.seed;
         if (splitTextToggle) splitTextToggle.checked = currentUiState.last_split_text_enabled !== undefined ? currentUiState.last_split_text_enabled : true;
@@ -442,6 +464,32 @@ document.addEventListener('DOMContentLoaded', async function () {
         });
         if (languageSelect) languageSelect.addEventListener('change', debouncedSaveState);
         if (outputFormatSelect) outputFormatSelect.addEventListener('change', debouncedSaveState);
+
+        // Conversation TTS control event handlers
+        const conversationGenParamSliders = [conversationTemperatureSlider, conversationExaggerationSlider, conversationCfgWeightSlider, conversationSpeedFactorSlider];
+        conversationGenParamSliders.forEach(slider => {
+            if (slider) {
+                const valueDisplayId = slider.id + '-value';
+                const valueDisplay = document.getElementById(valueDisplayId);
+                slider.addEventListener('input', () => {
+                    if (valueDisplay) valueDisplay.textContent = slider.value;
+                });
+                slider.addEventListener('change', debouncedSaveState);
+            }
+        });
+        
+        // Conversation voice mode selection
+        conversationVoiceModeRadios.forEach(radio => {
+            radio.addEventListener('change', function () {
+                toggleConversationVoiceMode(this.value);
+                debouncedSaveState();
+            });
+        });
+        
+        if (conversationPredefinedVoiceSelect) conversationPredefinedVoiceSelect.addEventListener('change', debouncedSaveState);
+        if (conversationCloneReferenceSelect) conversationCloneReferenceSelect.addEventListener('change', debouncedSaveState);
+        if (conversationSeedInput) conversationSeedInput.addEventListener('change', debouncedSaveState);
+        if (conversationOutputFormatSelect) conversationOutputFormatSelect.addEventListener('change', debouncedSaveState);
     }
 
     // --- Dynamic UI Population ---
@@ -449,11 +497,26 @@ document.addEventListener('DOMContentLoaded', async function () {
         if (!predefinedVoiceSelect) return;
         const currentSelectedValue = predefinedVoiceSelect.value;
         predefinedVoiceSelect.innerHTML = '<option value="none">-- Select Voice --</option>';
+        
+        // Also populate conversation predefined voice select
+        if (conversationPredefinedVoiceSelect) {
+            const currentConversationValue = conversationPredefinedVoiceSelect.value;
+            conversationPredefinedVoiceSelect.innerHTML = '<option value="none">-- Select Voice --</option>';
+        }
+        
         voicesData.forEach(voice => {
             const option = document.createElement('option');
             option.value = voice.filename;
             option.textContent = voice.display_name || voice.filename;
             predefinedVoiceSelect.appendChild(option);
+            
+            // Also add to conversation select
+            if (conversationPredefinedVoiceSelect) {
+                const conversationOption = document.createElement('option');
+                conversationOption.value = voice.filename;
+                conversationOption.textContent = voice.display_name || voice.filename;
+                conversationPredefinedVoiceSelect.appendChild(conversationOption);
+            }
         });
         const lastSelected = currentUiState.last_predefined_voice;
         const defaultFromConfig = currentConfig?.tts_engine?.default_voice_id;
@@ -472,11 +535,26 @@ document.addEventListener('DOMContentLoaded', async function () {
         if (!cloneReferenceSelect) return;
         const currentSelectedValue = cloneReferenceSelect.value;
         cloneReferenceSelect.innerHTML = '<option value="none">-- Select Reference File --</option>';
+        
+        // Also populate conversation clone reference select
+        if (conversationCloneReferenceSelect) {
+            const currentConversationValue = conversationCloneReferenceSelect.value;
+            conversationCloneReferenceSelect.innerHTML = '<option value="none">-- Select Reference File --</option>';
+        }
+        
         filesData.forEach(filename => {
             const option = document.createElement('option');
             option.value = filename;
             option.textContent = filename;
             cloneReferenceSelect.appendChild(option);
+            
+            // Also add to conversation select
+            if (conversationCloneReferenceSelect) {
+                const conversationOption = document.createElement('option');
+                conversationOption.value = filename;
+                conversationOption.textContent = filename;
+                conversationCloneReferenceSelect.appendChild(conversationOption);
+            }
         });
         const lastSelected = currentUiState.last_reference_file;
         if (currentSelectedValue !== 'none' && filesData.includes(currentSelectedValue)) {
@@ -560,6 +638,13 @@ document.addEventListener('DOMContentLoaded', async function () {
         if (cloneReferenceSelect) cloneReferenceSelect.required = (selectedMode === 'clone');
     }
     voiceModeRadios.forEach(radio => radio.addEventListener('change', toggleVoiceOptionsDisplay));
+
+    function toggleConversationVoiceMode(selectedMode) {
+        if (conversationPredefinedVoiceOptions) conversationPredefinedVoiceOptions.classList.toggle('hidden', selectedMode !== 'predefined');
+        if (conversationCloneOptions) conversationCloneOptions.classList.toggle('hidden', selectedMode !== 'clone');
+        if (conversationPredefinedVoiceSelect) conversationPredefinedVoiceSelect.required = (selectedMode === 'predefined');
+        if (conversationCloneReferenceSelect) conversationCloneReferenceSelect.required = (selectedMode === 'clone');
+    }
 
     function toggleChunkControlsVisibility() {
         const isChecked = splitTextToggle ? splitTextToggle.checked : false;
@@ -1376,9 +1461,32 @@ document.addEventListener('DOMContentLoaded', async function () {
                 formData.append('audio_file', audioBlob, audioBlob.name || 'audio.wav');
             }
             
-            // Use predefined voice mode with default voice for simplicity
-            formData.append('voice_mode', 'predefined');
-            formData.append('output_format', 'mp3');
+            // Get conversation TTS parameters
+            const conversationVoiceMode = document.querySelector('input[name="conversation_voice_mode"]:checked')?.value || 'predefined';
+            const conversationOutputFormat = conversationOutputFormatSelect?.value || 'mp3';
+            
+            formData.append('voice_mode', conversationVoiceMode);
+            formData.append('output_format', conversationOutputFormat);
+            
+            // Add voice-specific parameters
+            if (conversationVoiceMode === 'predefined') {
+                const predefinedVoice = conversationPredefinedVoiceSelect?.value;
+                if (predefinedVoice && predefinedVoice !== 'none') {
+                    formData.append('predefined_voice_id', predefinedVoice);
+                }
+            } else if (conversationVoiceMode === 'clone') {
+                const referenceFile = conversationCloneReferenceSelect?.value;
+                if (referenceFile && referenceFile !== 'none') {
+                    formData.append('reference_audio_filename', referenceFile);
+                }
+            }
+            
+            // Add TTS generation parameters
+            if (conversationTemperatureSlider) formData.append('temperature', conversationTemperatureSlider.value);
+            if (conversationExaggerationSlider) formData.append('exaggeration', conversationExaggerationSlider.value);
+            if (conversationCfgWeightSlider) formData.append('cfg_weight', conversationCfgWeightSlider.value);
+            if (conversationSpeedFactorSlider) formData.append('speed_factor', conversationSpeedFactorSlider.value);
+            if (conversationSeedInput) formData.append('seed', conversationSeedInput.value);
             
             const response = await fetch(`${API_BASE_URL}/conversation`, {
                 method: 'POST',

@@ -158,6 +158,86 @@
                             </div>
                         </div>
 
+                        <!-- TTS Controls for Conversation -->
+                        <div class="mb-6">
+                            <details class="group">
+                                <summary class="list-none flex cursor-pointer items-center group">
+                                    <span class="text-sm font-medium label-base group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
+                                        Response Voice Settings
+                                    </span>
+                                    <span class="ml-1.5 text-slate-400 group-hover:text-indigo-500 dark:group-hover:text-indigo-400 transition-colors">
+                                        <svg class="group-open:rotate-180 h-5 w-5 transition-transform duration-200 ease-in-out" viewBox="0 0 20 20" fill="currentColor">
+                                            <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
+                                        </svg>
+                                    </span>
+                                </summary>
+                                <div class="mt-4">
+                                    <!-- Voice Mode Selection -->
+                                    <div class="mb-4">
+                                        <label class="label-base mb-2">Voice Mode:</label>
+                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            <label class="voice-mode-option" data-mode="predefined">
+                                                <input type="radio" name="conversation_voice_mode" value="predefined" class="hidden peer" checked>
+                                                <span>Predefined Voices</span>
+                                            </label>
+                                            <label class="voice-mode-option" data-mode="clone">
+                                                <input type="radio" name="conversation_voice_mode" value="clone" class="hidden peer">
+                                                <span>Voice Cloning (Reference)</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Predefined Voice Selection -->
+                                    <div id="conversation-predefined-voice-options" class="mb-4">
+                                        <label for="conversation-predefined-voice-select" class="label-base">Select Predefined Voice:</label>
+                                        <select id="conversation-predefined-voice-select" name="conversation_predefined_voice_select" class="select-base">
+                                            <option value="none">-- Select Voice --</option>
+                                        </select>
+                                    </div>
+                                    
+                                    <!-- Voice Cloning Options -->
+                                    <div id="conversation-clone-options" class="mb-4 hidden">
+                                        <label for="conversation-clone-reference-select" class="label-base">Reference Audio File</label>
+                                        <select id="conversation-clone-reference-select" name="conversation_clone_reference_select" class="select-base">
+                                            <option value="none">-- Select Reference File --</option>
+                                        </select>
+                                    </div>
+                                    
+                                    <!-- TTS Generation Parameters -->
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4">
+                                        <div>
+                                            <label for="conversation-temperature" class="label-base">Temperature (<span id="conversation-temperature-value" class="font-semibold tabular-nums">0.8</span>)</label>
+                                            <input type="range" id="conversation-temperature" name="conversation_temperature" min="0.0" max="1.5" step="0.01" value="0.8" class="slider-base">
+                                        </div>
+                                        <div>
+                                            <label for="conversation-exaggeration" class="label-base">Exaggeration (<span id="conversation-exaggeration-value" class="font-semibold tabular-nums">0.5</span>)</label>
+                                            <input type="range" id="conversation-exaggeration" name="conversation_exaggeration" min="0.0" max="2.0" step="0.01" value="0.5" class="slider-base">
+                                        </div>
+                                        <div>
+                                            <label for="conversation-cfg-weight" class="label-base">CFG Weight (<span id="conversation-cfg-weight-value" class="font-semibold tabular-nums">0.5</span>)</label>
+                                            <input type="range" id="conversation-cfg-weight" name="conversation_cfg_weight" min="0.0" max="2.0" step="0.01" value="0.5" class="slider-base">
+                                        </div>
+                                        <div>
+                                            <label for="conversation-speed-factor" class="label-base">Speed Factor (<span id="conversation-speed-factor-value" class="font-semibold tabular-nums">1.0</span>)</label>
+                                            <input type="range" id="conversation-speed-factor" name="conversation_speed_factor" min="0.25" max="4.0" step="0.05" value="1.0" class="slider-base">
+                                        </div>
+                                        <div>
+                                            <label for="conversation-seed" class="label-base">Generation Seed</label>
+                                            <input type="number" id="conversation-seed" name="conversation_seed" value="0" placeholder="0 (or -1 for random)" class="input-base w-32" title="Enter an integer seed for reproducible results, or -1 for random">
+                                        </div>
+                                        <div>
+                                            <label for="conversation-output-format" class="label-base">Output Format</label>
+                                            <select id="conversation-output-format" name="conversation_output_format" class="select-base w-32">
+                                                <option value="wav">WAV</option>
+                                                <option value="mp3" selected>MP3</option>
+                                                <option value="opus">Opus</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+                            </details>
+                        </div>
+
                         <!-- Conversation Output -->
                         <div id="conversation-output-container" class="hidden">
                             <label class="label-base">Response</label>

@@ -65,6 +65,11 @@ async def process_conversation(
     reference_audio_filename: Optional[str] = Form(None, description="Reference audio for voice cloning"),
     output_format: str = Form("wav", description="Output audio format"),
     language: Optional[str] = Form(None, description="STT language (auto-detect if None)"),
+    temperature: Optional[float] = Form(None, description="Temperature for TTS generation (uses default if None)"),
+    exaggeration: Optional[float] = Form(None, description="Exaggeration for TTS generation (uses default if None)"),
+    cfg_weight: Optional[float] = Form(None, description="CFG weight for TTS generation (uses default if None)"),
+    seed: Optional[int] = Form(None, description="Seed for TTS generation (uses default if None)"),
+    speed_factor: Optional[float] = Form(None, description="Speed factor for TTS generation (uses default if None)"),
     stt_engine: STTEngine = Depends(get_stt_engine)
 ):
     """
@@ -148,10 +153,10 @@ async def process_conversation(
         audio_tensor, sample_rate = engine.synthesize(
             text=transcribed_text,
             audio_prompt_path=str(audio_prompt_path_for_engine) if audio_prompt_path_for_engine else None,
-            temperature=get_gen_default_temperature(),
-            exaggeration=get_gen_default_exaggeration(),
-            cfg_weight=get_gen_default_cfg_weight(),
-            seed=get_gen_default_seed(),
+            temperature=temperature if temperature is not None else get_gen_default_temperature(),
+            exaggeration=exaggeration if exaggeration is not None else get_gen_default_exaggeration(),
+            cfg_weight=cfg_weight if cfg_weight is not None else get_gen_default_cfg_weight(),
+            seed=seed if seed is not None else get_gen_default_seed(),
         )
         
         if audio_tensor is None or sample_rate is None:
@@ -164,9 +169,9 @@ async def process_conversation(
         audio_np = audio_tensor.cpu().numpy().squeeze()
         
         # Apply speed factor if configured
-        speed_factor = get_gen_default_speed_factor()
-        if speed_factor != 1.0:
-            audio_np, _ = utils.apply_speed_factor(audio_np, sample_rate, speed_factor)
+        final_speed_factor = speed_factor if speed_factor is not None else get_gen_default_speed_factor()
+        if final_speed_factor != 1.0:
+            audio_np, _ = utils.apply_speed_factor(audio_np, sample_rate, final_speed_factor)
         
         # Encode to requested format
         encoded_audio_bytes = utils.encode_audio(
