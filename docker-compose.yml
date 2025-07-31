@@ -4,12 +4,15 @@ services:
   # Caddy reverse proxy for HTTPS
   caddy:
     image: caddy:2-alpine
+    command: sh -c "apk add --no-cache nss-tools && caddy run --config /etc/caddy/Caddyfile --adapter caddyfile"
     restart: unless-stopped
     ports:
       - "80:80"
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile
+      - ./server.crt:/etc/caddy/server.crt
+      - ./server.key:/etc/caddy/server.key
       - caddy_data:/data
       - caddy_config:/config
     networks:
@@ -25,8 +28,8 @@ services:
       context: .
       dockerfile: Dockerfile
     # Remove external port exposure - only accessible via Caddy
-    expose:
-      - "8004"
+    ports:
+      - "${PORT:-4000}:8004"
     networks:
       - chatterbox-network
     volumes:

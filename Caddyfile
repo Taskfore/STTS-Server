@@ -4,7 +4,7 @@
 # Listen on all interfaces for HTTPS traffic
 :443 {
     # Enable self-signed certificates for IP access
-    tls internal
+    tls /etc/caddy/server.crt /etc/caddy/server.key
     
     # Reverse proxy to the TTS server container (handles both HTTP and WebSocket)
     reverse_proxy chatterbox-tts-server:8004
@@ -13,7 +13,7 @@
     log {
         output stdout
         format console
-        level INFO
+        level DEBUG
     }
     
     # Add security headers
@@ -24,8 +24,6 @@
         X-XSS-Protection "1; mode=block"
         # Prevent clickjacking
         X-Frame-Options DENY
-        # Force HTTPS for future requests (optional, can be removed if needed)
-        Strict-Transport-Security "max-age=31536000; includeSubDomains"
     }
 }
 
@@ -37,6 +35,6 @@
     log {
         output stdout
         format console
-        level INFO
+        level DEBUG
     }
 }
