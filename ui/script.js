@@ -1188,7 +1188,10 @@ document.addEventListener('DOMContentLoaded', async function () {
         };
         
         mediaRecorder.onstop = async () => {
-            const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+            const webmBlob = new Blob(audioChunks, { type: 'audio/webm' });
+            // Convert WebM to WAV for better compatibility
+            const wavBlob = await convertWebMToWAV(webmBlob);
+            const audioBlob = wavBlob || webmBlob; // Fallback to WebM if conversion fails
             await processConversationAudio(audioBlob, 'microphone');
             
             // Stop all tracks to release microphone
@@ -1236,7 +1239,7 @@ document.addEventListener('DOMContentLoaded', async function () {
                     const arrayBuffer = await event.data.arrayBuffer();
                     
                     // NOTE: WebSocket STT endpoint expects 16-bit PCM, 16kHz format
-                    // Currently sending webm data - this may require server-side conversion
+                    // Currently sending webm data - server handles conversion
                     // For production, consider client-side audio format conversion using Web Audio API
                     websocket.send(arrayBuffer);
                 } catch (error) {
@@ -1287,6 +1290,68 @@ document.addEventListener('DOMContentLoaded', async function () {
         }
     }
 
+    // Convert WebM audio to WAV format using Web Audio API
+    async function convertWebMToWAV(webmBlob) {
+        try {
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const arrayBuffer = await webmBlob.arrayBuffer();
+            const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+            
+            // Create WAV data
+            const length = audioBuffer.length;
+            const sampleRate = audioBuffer.sampleRate;
+            const numberOfChannels = audioBuffer.numberOfChannels;
+            
+            // Calculate WAV file size
+            const bytesPerSample = 2; // 16-bit
+            const dataLength = length * numberOfChannels * bytesPerSample;
+            const bufferLength = 44 + dataLength; // WAV header is 44 bytes
+            
+            // Create WAV buffer
+            const wavBuffer = new ArrayBuffer(bufferLength);
+            const view = new DataView(wavBuffer);
+            
+            // WAV header
+            const writeString = (offset, string) => {
+                for (let i = 0; i < string.length; i++) {
+                    view.setUint8(offset + i, string.charCodeAt(i));
+                }
+            };
+            
+            writeString(0, 'RIFF');
+            view.setUint32(4, bufferLength - 8, true);
+            writeString(8, 'WAVE');
+            writeString(12, 'fmt ');
+            view.setUint32(16, 16, true); // fmt chunk size
+            view.setUint16(20, 1, true); // PCM format
+            view.setUint16(22, numberOfChannels, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * numberOfChannels * bytesPerSample, true);
+            view.setUint16(32, numberOfChannels * bytesPerSample, true);
+            view.setUint16(34, 16, true); // bits per sample
+            writeString(36, 'data');
+            view.setUint32(40, dataLength, true);
+            
+            // Convert audio data to 16-bit PCM
+            let offset = 44;
+            for (let channel = 0; channel < numberOfChannels; channel++) {
+                const channelData = audioBuffer.getChannelData(channel);
+                for (let i = 0; i < length; i++) {
+                    const sample = Math.max(-1, Math.min(1, channelData[i]));
+                    view.setInt16(offset, sample * 0x7FFF, true);
+                    offset += 2;
+                }
+            }
+            
+            await audioContext.close();
+            return new Blob([wavBuffer], { type: 'audio/wav' });
+            
+        } catch (error) {
+            console.error('WebM to WAV conversion failed:', error);
+            return null; // Return null to indicate conversion failure
+        }
+    }
+
     // Process conversation audio (from microphone or file upload)
     async function processConversationAudio(audioBlob, source = 'file') {
         try {
@@ -1295,9 +1360,10 @@ document.addEventListener('DOMContentLoaded', async function () {
             // Create FormData for the conversation endpoint
             const formData = new FormData();
             
-            // Convert webm to wav for better compatibility if from microphone
-            if (source === 'microphone' && audioBlob.type === 'audio/webm') {
-                formData.append('audio_file', audioBlob, 'recording.webm');
+            // Handle different audio formats from microphone
+            if (source === 'microphone') {
+                const fileName = audioBlob.type === 'audio/wav' ? 'recording.wav' : 'recording.webm';
+                formData.append('audio_file', audioBlob, fileName);
             } else {
                 formData.append('audio_file', audioBlob, audioBlob.name || 'audio.wav');
             }
