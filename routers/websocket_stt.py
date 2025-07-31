@@ -7,6 +7,8 @@ import json
 import threading
 import queue
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor
+from collections import deque
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 import numpy as np
@@ -17,58 +19,148 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ws", tags=["WebSocket STT"])
 
+# Dedicated thread pool for CPU-intensive transcription tasks
+TRANSCRIPTION_THREAD_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="STT-Worker")
+
+
+class AsyncAudioDecoder:
+    """Async WebM to numpy array decoder using ffmpeg."""
+    
+    @staticmethod
+    async def decode_webm_to_numpy(webm_data: bytes) -> Optional[np.ndarray]:
+        """
+        Decode WebM audio data to numpy array using async subprocess.
+        
+        Args:
+            webm_data: Raw WebM audio bytes
+            
+        Returns:
+            Float32 numpy array at 16kHz mono, or None if decoding fails
+        """
+        try:
+            # Use ffmpeg with pipes to avoid file I/O
+            cmd = [
+                'ffmpeg', '-f', 'webm', '-i', 'pipe:0',  # Read from stdin
+                '-ar', '16000',         # Sample rate 16kHz
+                '-ac', '1',            # Mono
+                '-f', 's16le',         # 16-bit little-endian PCM
+                '-loglevel', 'error',  # Suppress ffmpeg output
+                '-avoid_negative_ts', 'make_zero',
+                '-fflags', '+genpts',
+                'pipe:1'               # Write to stdout
+            ]
+            
+            # Create async subprocess with pipes
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            # Send WebM data and get PCM output
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(input=webm_data),
+                timeout=5.0  # 5 second timeout
+            )
+            
+            if process.returncode != 0:
+                if stderr:
+                    logger.warning(f"ffmpeg decode error: {stderr.decode('utf-8', errors='ignore')}")
+                return None
+            
+            if len(stdout) == 0:
+                return None
+            
+            # Convert PCM bytes to numpy array
+            audio_np = np.frombuffer(stdout, dtype=np.int16).astype(np.float32) / 32768.0
+            return audio_np
+            
+        except asyncio.TimeoutError:
+            logger.warning("ffmpeg timeout during WebM decoding")
+            if 'process' in locals():
+                process.kill()
+            return None
+        except Exception as e:
+            logger.error(f"Error in async WebM decoding: {e}")
+            return None
 
 
 
-class AudioBuffer:
-    """Thread-safe audio buffer for real-time processing."""
+
+class OptimizedAudioBuffer:
+    """Optimized thread-safe audio buffer using deque for better performance."""
     
     def __init__(self, max_duration_seconds: float = 30.0, sample_rate: int = 16000):
         self.max_duration = max_duration_seconds
         self.sample_rate = sample_rate
         self.max_samples = int(max_duration_seconds * sample_rate)
-        self.buffer = np.array([], dtype=np.float32)
+        self.chunks = deque()  # Use deque for efficient append/pop operations
+        self.total_samples = 0
         self.lock = threading.Lock()
     
     def add_audio(self, audio_data: np.ndarray):
-        """Add audio data to the buffer."""
+        """Add audio data to the buffer efficiently."""
         with self.lock:
-            self.buffer = np.concatenate([self.buffer, audio_data])
-            # Keep only the last max_duration seconds
-            if len(self.buffer) > self.max_samples:
-                self.buffer = self.buffer[-self.max_samples:]
+            self.chunks.append(audio_data)
+            self.total_samples += len(audio_data)
+            
+            # Remove old chunks if we exceed max duration
+            while self.total_samples > self.max_samples and self.chunks:
+                removed_chunk = self.chunks.popleft()
+                self.total_samples -= len(removed_chunk)
     
-    def get_audio(self) -> np.ndarray:
-        """Get current audio buffer."""
+    def get_recent_audio(self, duration_seconds: float = 5.0) -> np.ndarray:
+        """Get recent audio for transcription (more efficient than full buffer)."""
+        target_samples = int(duration_seconds * self.sample_rate)
+        
         with self.lock:
-            return self.buffer.copy()
+            if not self.chunks:
+                return np.array([], dtype=np.float32)
+            
+            # Collect recent chunks up to target duration
+            collected_chunks = []
+            collected_samples = 0
+            
+            # Work backwards from most recent chunks
+            for chunk in reversed(self.chunks):
+                collected_chunks.insert(0, chunk)
+                collected_samples += len(chunk)
+                if collected_samples >= target_samples:
+                    break
+            
+            if collected_chunks:
+                return np.concatenate(collected_chunks)
+            return np.array([], dtype=np.float32)
     
     def clear(self):
         """Clear the audio buffer."""
         with self.lock:
-            self.buffer = np.array([], dtype=np.float32)
+            self.chunks.clear()
+            self.total_samples = 0
 
 
-class RealtimeSTT:
-    """Real-time STT processor using continuous audio buffering."""
+class OptimizedRealtimeSTT:
+    """Optimized real-time STT processor with async audio processing."""
     
     def __init__(self, stt_engine: STTEngine, language: Optional[str] = None):
         self.stt_engine = stt_engine
         self.language = language
-        self.audio_buffer = AudioBuffer()
+        self.audio_buffer = OptimizedAudioBuffer()
         self.processing = False
         self.last_transcription = ""
-        self.webm_chunks = []
+        self.webm_accumulator = bytearray()  # More efficient than list of chunks
         self.chunk_count = 0
-        self.process_every_n_chunks = 5  # Process every 5 chunks for better performance
+        self.process_every_n_chunks = 3  # Reduced for better responsiveness
+        self.decoder = AsyncAudioDecoder()
         
     async def process_audio_chunk(self, audio_data: bytes) -> Optional[str]:
-        """Process incoming audio chunk and return transcription if available."""
+        """Process incoming audio chunk with optimized pipeline."""
         try:
-            # Accumulate WebM chunks
-            self.webm_chunks.append(audio_data)
+            # Accumulate WebM data efficiently
+            self.webm_accumulator.extend(audio_data)
             self.chunk_count += 1
-            logger.debug(f"Received chunk {self.chunk_count}, size: {len(audio_data)} bytes")
+            logger.debug(f"Received chunk {self.chunk_count}, total size: {len(self.webm_accumulator)} bytes")
             
             # Only process every N chunks to allow accumulation
             if self.chunk_count % self.process_every_n_chunks != 0:
@@ -80,174 +172,57 @@ class RealtimeSTT:
                 
             self.processing = True
             
-            # Combine accumulated chunks
-            combined_webm = b''.join(self.webm_chunks)
-            logger.info(f"Processing {len(self.webm_chunks)} accumulated chunks, total size: {len(combined_webm)} bytes")
-            
-            # Convert WebM audio data to numpy array
-            audio_np = await self._decode_combined_webm_audio(combined_webm)
-            if audio_np is None or len(audio_np) == 0:
-                # Try fallback approach with file-based processing
-                transcription = await self._process_webm_as_file(combined_webm)
-                self.processing = False
+            try:
+                # Convert WebM to numpy array using async decoder
+                webm_bytes = bytes(self.webm_accumulator)
+                audio_np = await self.decoder.decode_webm_to_numpy(webm_bytes)
+                
+                if audio_np is None or len(audio_np) == 0:
+                    logger.debug("No audio data decoded from WebM chunk")
+                    return None
+                
+                # Add to optimized buffer for potential future use
+                self.audio_buffer.add_audio(audio_np)
+                
+                # Transcribe using dedicated thread pool
+                loop = asyncio.get_event_loop()
+                transcription = await loop.run_in_executor(
+                    TRANSCRIPTION_THREAD_POOL,
+                    self._transcribe_numpy_audio,
+                    audio_np
+                )
+                
+                # Only return if transcription changed significantly
                 if transcription and transcription != self.last_transcription:
                     self.last_transcription = transcription
-                    self.webm_chunks = self.webm_chunks[-2:]
+                    # Keep recent WebM data for context (last 2 processing cycles)
+                    keep_size = len(self.webm_accumulator) // 2
+                    self.webm_accumulator = self.webm_accumulator[-keep_size:]
                     return transcription
+                    
                 return None
-            
-            # Process in background thread to avoid blocking WebSocket
-            loop = asyncio.get_event_loop()
-            transcription = await loop.run_in_executor(
-                None, 
-                self._transcribe_audio, 
-                audio_np
-            )
-            
-            self.processing = False
-            
-            # Only return if transcription changed significantly
-            if transcription and transcription != self.last_transcription:
-                self.last_transcription = transcription
-                # Keep only the last few chunks for context
-                self.webm_chunks = self.webm_chunks[-2:]
-                return transcription
                 
-            return None
+            finally:
+                self.processing = False
             
         except Exception as e:
             logger.error(f"Error processing audio chunk: {e}")
             self.processing = False
             return None
     
-    async def _decode_combined_webm_audio(self, webm_data: bytes) -> Optional[np.ndarray]:
-        """Decode WebM audio data to numpy array."""
-        webm_path = None
-        pcm_path = None
-        
+    def _transcribe_numpy_audio(self, audio_data: np.ndarray) -> Optional[str]:
+        """Transcribe numpy audio directly using STT engine (no temp files)."""
         try:
-            import tempfile
-            import subprocess
-            import os
-            
-            # Save WebM data to temporary file
-            with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as webm_file:
-                webm_file.write(webm_data)
-                webm_path = webm_file.name
-            
-            # Convert to raw PCM using ffmpeg
-            with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as pcm_file:
-                pcm_path = pcm_file.name
-            
-            # Use ffmpeg to decode WebM to 16kHz mono 16-bit PCM
-            cmd = [
-                'ffmpeg', '-i', webm_path,
-                '-ar', '16000',         # Sample rate 16kHz
-                '-ac', '1',            # Mono
-                '-f', 's16le',         # 16-bit little-endian PCM
-                '-loglevel', 'error',  # Suppress ffmpeg output
-                '-avoid_negative_ts', 'make_zero',  # Handle timing issues
-                '-fflags', '+genpts',  # Generate presentation timestamps
-                '-y', pcm_path         # Overwrite output
-            ]
-            
-            # Run ffmpeg with suppressed output
-            result = subprocess.run(
-                cmd, 
-                capture_output=True, 
-                text=False,
-                timeout=5  # 5 second timeout for real-time processing
-            )
-            
-            if result.returncode != 0:
-                stderr_output = result.stderr.decode('utf-8') if result.stderr else "No error output"
-                logger.warning(f"ffmpeg failed to decode WebM audio chunk. Error: {stderr_output}")
-                logger.warning("Make sure ffmpeg is installed and accessible in PATH")
-                return None
-            
-            # Read the PCM data
-            with open(pcm_path, 'rb') as f:
-                pcm_data = f.read()
-            
-            if len(pcm_data) == 0:
-                return None
-            
-            # Convert to numpy array
-            audio_np = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
-            return audio_np
-            
-        except subprocess.TimeoutExpired:
-            logger.warning("ffmpeg timeout while decoding WebM audio chunk")
-            return None
+            # Use the new direct numpy transcription method
+            result = self.stt_engine.transcribe_numpy(audio_data, self.language)
+            return result
         except Exception as e:
-            logger.error(f"Error decoding WebM audio: {e}")
+            logger.error(f"Error in numpy transcription: {e}")
             return None
-        finally:
-            # Clean up temporary files
-            try:
-                if webm_path and os.path.exists(webm_path):
-                    os.unlink(webm_path)
-                if pcm_path and os.path.exists(pcm_path):
-                    os.unlink(pcm_path)
-            except Exception as cleanup_error:
-                logger.warning(f"Error cleaning up temp files: {cleanup_error}")
-    
-    async def _process_webm_as_file(self, webm_data: bytes) -> Optional[str]:
-        """Fallback: Process WebM data directly as a complete file."""
-        webm_path = None
-        try:
-            import tempfile
-            import os
-            
-            # Save combined WebM data to a temporary file
-            with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as webm_file:
-                webm_file.write(webm_data)
-                webm_path = webm_file.name
-            
-            # Process in background thread
-            loop = asyncio.get_event_loop()
-            transcription = await loop.run_in_executor(
-                None,
-                self.stt_engine.transcribe_file,
-                webm_path,
-                self.language
-            )
-            
-            return transcription
-            
-        except Exception as e:
-            logger.error(f"Error processing WebM file directly: {e}")
-            return None
-        finally:
-            # Clean up temporary file
-            try:
-                if webm_path and os.path.exists(webm_path):
-                    os.unlink(webm_path)
-            except Exception as cleanup_error:
-                logger.warning(f"Error cleaning up WebM temp file: {cleanup_error}")
-    
-    def _transcribe_audio(self, audio_data: np.ndarray) -> Optional[str]:
-        """Transcribe audio data using STT engine."""
-        try:
-            import tempfile
-            import soundfile as sf
-            
-            # Save audio to temporary file for Whisper
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-                sf.write(temp_file.name, audio_data, self.audio_buffer.sample_rate)
-                
-                # Transcribe using STT engine
-                result = self.stt_engine.transcribe_file(temp_file.name, self.language)
-                
-                # Clean up temp file
-                import os
-                os.unlink(temp_file.name)
-                
-                return result
-                
-        except Exception as e:
-            logger.error(f"Error in transcription: {e}")
-            return None
+
+
+# Backward compatibility alias
+RealtimeSTT = OptimizedRealtimeSTT
 
 
 @router.websocket("/transcribe")
@@ -284,8 +259,8 @@ async def websocket_transcribe(
     
     logger.info(f"WebSocket STT connection established, language: {language}")
     
-    # Initialize real-time STT processor
-    realtime_stt = RealtimeSTT(stt_engine, language)
+    # Initialize optimized real-time STT processor
+    realtime_stt = OptimizedRealtimeSTT(stt_engine, language)
     
     try:
         await websocket.send_json({
@@ -320,7 +295,7 @@ async def websocket_transcribe(
                         
                         if command.get("action") == "clear":
                             realtime_stt.audio_buffer.clear()
-                            realtime_stt.webm_chunks.clear()
+                            realtime_stt.webm_accumulator.clear()
                             realtime_stt.chunk_count = 0
                             realtime_stt.last_transcription = ""
                             await websocket.send_json({

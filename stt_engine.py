@@ -132,3 +132,44 @@ class STTEngine:
         except Exception as e:
             logger.error(f"Error during transcription: {e}", exc_info=True)
             return None
+
+    def transcribe_numpy(self, audio_array: 'np.ndarray', language: Optional[str] = None) -> Optional[str]:
+        """
+        Transcribes audio from a numpy array directly.
+        
+        Args:
+            audio_array: Float32 numpy array with audio data (mono, any sample rate)
+            language: Language code or None for auto-detection
+            
+        Returns:
+            Transcribed text or None if transcription fails
+        """
+        if not self.model_loaded or self.model is None:
+            logger.error("STT model is not loaded. Cannot transcribe audio.")
+            return None
+        
+        try:
+            import numpy as np
+            
+            if not isinstance(audio_array, np.ndarray):
+                logger.error("Audio input must be a numpy array")
+                return None
+            
+            if len(audio_array) == 0:
+                logger.warning("Empty audio array provided")
+                return None
+            
+            # Use configured language or auto-detection
+            detect_language = language or get_stt_language()
+            language_param = None if detect_language == "auto" else detect_language
+            
+            logger.debug(f"Transcribing numpy array: shape={audio_array.shape}, dtype={audio_array.dtype}")
+            result = self.model.transcribe(audio_array, language=language_param)
+            
+            transcribed_text = result["text"].strip()
+            logger.debug(f"Numpy transcription completed. Length: {len(transcribed_text)} characters")
+            return transcribed_text
+            
+        except Exception as e:
+            logger.error(f"Error during numpy transcription: {e}", exc_info=True)
+            return None
