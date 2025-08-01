@@ -23,66 +23,31 @@ router = APIRouter(prefix="/ws", tags=["WebSocket STT"])
 TRANSCRIPTION_THREAD_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="STT-Worker")
 
 
-class AsyncAudioDecoder:
-    """Async WebM to numpy array decoder using ffmpeg."""
+class PCMAudioDecoder:
+    """Simple PCM to numpy array decoder."""
     
     @staticmethod
-    async def decode_webm_to_numpy(webm_data: bytes) -> Optional[np.ndarray]:
+    async def decode_pcm_to_numpy(pcm_data: bytes) -> Optional[np.ndarray]:
         """
-        Decode WebM audio data to numpy array using async subprocess.
+        Convert raw PCM data to numpy array.
         
         Args:
-            webm_data: Raw WebM audio bytes
+            pcm_data: Raw 16-bit little-endian PCM audio bytes
             
         Returns:
-            Float32 numpy array at 16kHz mono, or None if decoding fails
+            Float32 numpy array, or None if conversion fails
         """
         try:
-            # Use ffmpeg with pipes to avoid file I/O
-            cmd = [
-                'ffmpeg', '-f', 'webm', '-i', 'pipe:0',  # Read from stdin
-                '-ar', '16000',         # Sample rate 16kHz
-                '-ac', '1',            # Mono
-                '-f', 's16le',         # 16-bit little-endian PCM
-                '-loglevel', 'error',  # Suppress ffmpeg output
-                '-avoid_negative_ts', 'make_zero',
-                '-fflags', '+genpts',
-                'pipe:1'               # Write to stdout
-            ]
-            
-            # Create async subprocess with pipes
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            # Send WebM data and get PCM output
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(input=webm_data),
-                timeout=5.0  # 5 second timeout
-            )
-            
-            if process.returncode != 0:
-                if stderr:
-                    logger.warning(f"ffmpeg decode error: {stderr.decode('utf-8', errors='ignore')}")
+            if len(pcm_data) == 0:
                 return None
             
-            if len(stdout) == 0:
-                return None
-            
-            # Convert PCM bytes to numpy array
-            audio_np = np.frombuffer(stdout, dtype=np.int16).astype(np.float32) / 32768.0
+            # Convert PCM bytes directly to numpy array
+            # Frontend sends 16-bit signed integers in little-endian format
+            audio_np = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
             return audio_np
             
-        except asyncio.TimeoutError:
-            logger.warning("ffmpeg timeout during WebM decoding")
-            if 'process' in locals():
-                process.kill()
-            return None
         except Exception as e:
-            logger.error(f"Error in async WebM decoding: {e}")
+            logger.error(f"Error converting PCM to numpy: {e}")
             return None
 
 
@@ -141,7 +106,7 @@ class OptimizedAudioBuffer:
 
 
 class OptimizedRealtimeSTT:
-    """Optimized real-time STT processor with async audio processing."""
+    """Optimized real-time STT processor with PCM audio processing."""
     
     def __init__(self, stt_engine: STTEngine, language: Optional[str] = None):
         self.stt_engine = stt_engine
@@ -149,20 +114,27 @@ class OptimizedRealtimeSTT:
         self.audio_buffer = OptimizedAudioBuffer()
         self.processing = False
         self.last_transcription = ""
-        self.webm_accumulator = bytearray()  # More efficient than list of chunks
         self.chunk_count = 0
-        self.process_every_n_chunks = 3  # Reduced for better responsiveness
-        self.decoder = AsyncAudioDecoder()
+        self.process_every_n_chunks = 4  # Process every 4 chunks (~256ms of audio)
+        self.decoder = PCMAudioDecoder()
         
     async def process_audio_chunk(self, audio_data: bytes) -> Optional[str]:
-        """Process incoming audio chunk with optimized pipeline."""
+        """Process incoming PCM audio chunk."""
         try:
-            # Accumulate WebM data efficiently
-            self.webm_accumulator.extend(audio_data)
             self.chunk_count += 1
-            logger.debug(f"Received chunk {self.chunk_count}, total size: {len(self.webm_accumulator)} bytes")
+            logger.debug(f"Received PCM chunk {self.chunk_count}, size: {len(audio_data)} bytes")
             
-            # Only process every N chunks to allow accumulation
+            # Convert PCM to numpy array directly
+            audio_np = await self.decoder.decode_pcm_to_numpy(audio_data)
+            
+            if audio_np is None or len(audio_np) == 0:
+                logger.debug("No audio data decoded from PCM chunk")
+                return None
+            
+            # Add to optimized buffer
+            self.audio_buffer.add_audio(audio_np)
+            
+            # Process every N chunks to accumulate enough audio
             if self.chunk_count % self.process_every_n_chunks != 0:
                 return None
             
@@ -173,40 +145,32 @@ class OptimizedRealtimeSTT:
             self.processing = True
             
             try:
-                # Convert WebM to numpy array using async decoder
-                webm_bytes = bytes(self.webm_accumulator)
-                audio_np = await self.decoder.decode_webm_to_numpy(webm_bytes)
+                # Get recent audio for transcription (2 seconds worth)
+                recent_audio = self.audio_buffer.get_recent_audio(duration_seconds=2.0)
                 
-                if audio_np is None or len(audio_np) == 0:
-                    logger.debug("No audio data decoded from WebM chunk")
+                if len(recent_audio) == 0:
                     return None
-                
-                # Add to optimized buffer for potential future use
-                self.audio_buffer.add_audio(audio_np)
                 
                 # Transcribe using dedicated thread pool
                 loop = asyncio.get_event_loop()
                 transcription = await loop.run_in_executor(
                     TRANSCRIPTION_THREAD_POOL,
                     self._transcribe_numpy_audio,
-                    audio_np
+                    recent_audio
                 )
                 
                 # Only return if transcription changed significantly
                 if transcription and transcription != self.last_transcription:
                     self.last_transcription = transcription
-                    # Keep recent WebM data for context (last 2 processing cycles)
-                    keep_size = len(self.webm_accumulator) // 2
-                    self.webm_accumulator = self.webm_accumulator[-keep_size:]
                     return transcription
                     
                 return None
                 
             finally:
                 self.processing = False
-            
+                
         except Exception as e:
-            logger.error(f"Error processing audio chunk: {e}")
+            logger.error(f"Error processing PCM chunk: {e}")
             self.processing = False
             return None
     
@@ -233,7 +197,7 @@ async def websocket_transcribe(
     """
     Real-time speech transcription via WebSocket.
     
-    Expects audio data as binary frames (16-bit PCM, 16kHz recommended).
+    Expects raw PCM audio data as binary frames (16-bit little-endian, 16kHz mono).
     Returns JSON messages with transcription results.
     """
     await websocket.accept()

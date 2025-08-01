@@ -148,11 +148,10 @@ document.addEventListener('DOMContentLoaded', async function() {
     let realtimeTranscription = '';
     let reconnectAttempts = 0;
     let maxReconnectAttempts = 5;
-    let webmChunkBuffer = [];
+    let pcmProcessor = null;
+    let pcmAudioContext = null;
+    let pcmMicrophone = null;
     let chunkCount = 0;
-    let sendInterval = null;
-    let firstChunkSent = false;
-    let webmHeader = null;
 
 
     // Handle voice mode selection visual feedback
@@ -1272,38 +1271,37 @@ document.addEventListener('DOMContentLoaded', async function() {
         }
     }
 
-    // Start record and process mode (existing functionality)
+    // Start record and process mode (now also uses PCM for consistency)
     async function startRecordAndProcess(stream) {
         audioChunks = [];
-        mediaRecorder = new MediaRecorder(stream, {
-            mimeType: 'audio/webm'
+        
+        // Use same PCM approach as real-time mode for consistency
+        pcmAudioContext = new (window.AudioContext || window.webkitAudioContext)({
+            sampleRate: 16000 // 16kHz sample rate
         });
-
-        mediaRecorder.ondataavailable = (event) => {
-            if (event.data.size > 0) {
-                audioChunks.push(event.data);
-            }
+        
+        pcmMicrophone = pcmAudioContext.createMediaStreamSource(stream);
+        pcmProcessor = pcmAudioContext.createScriptProcessor(4096, 1, 1);
+        
+        pcmProcessor.onaudioprocess = (event) => {
+            const inputBuffer = event.inputBuffer;
+            const inputData = inputBuffer.getChannelData(0); // Get mono channel
+            
+            // Convert Float32 to 16-bit PCM and store
+            const pcmData = convertToPCM16(inputData);
+            audioChunks.push(new Uint8Array(pcmData));
         };
-
-        mediaRecorder.onstop = async () => {
-            const webmBlob = new Blob(audioChunks, { type: 'audio/webm' });
-            // Convert WebM to WAV for better compatibility
-            const wavBlob = await convertWebMToWAV(webmBlob);
-            const audioBlob = wavBlob || webmBlob; // Fallback to WebM if conversion fails
-            await processConversationAudio(audioBlob, 'microphone');
-
-            // Stop all tracks to release microphone
-            stream.getTracks().forEach(track => track.stop());
-
-            // Clean up audio context
-            if (audioContext) {
-                audioContext.close();
-                audioContext = null;
-            }
-        };
+        
+        // Connect the audio graph
+        pcmMicrophone.connect(pcmProcessor);
+        pcmProcessor.connect(pcmAudioContext.destination);
+        
+        // Resume audio context (required by some browsers)
+        if (pcmAudioContext.state === 'suspended') {
+            await pcmAudioContext.resume();
+        }
 
         initAudioLevelMonitoring(stream);
-        mediaRecorder.start();
         isRecording = true;
 
         if (startConversationBtn) startConversationBtn.disabled = true;
@@ -1312,34 +1310,39 @@ document.addEventListener('DOMContentLoaded', async function() {
         if (audioLevelContainer) audioLevelContainer.classList.remove('hidden');
     }
 
-    // Send WebM chunk to WebSocket
-    async function sendWebMChunk(chunk, isFirst = false) {
+    // Send PCM audio data to WebSocket
+    function sendPCMData(pcmData) {
         if (websocket && websocket.readyState === WebSocket.OPEN) {
             try {
-                const arrayBuffer = await chunk.arrayBuffer();
-                console.log(`Sending ${isFirst ? 'first' : 'accumulated'} WebM chunk: ${arrayBuffer.byteLength} bytes`);
-                websocket.send(arrayBuffer);
+                console.log(`Sending PCM data: ${pcmData.byteLength} bytes`);
+                websocket.send(pcmData);
             } catch (error) {
-                console.error('Error sending WebM chunk to WebSocket:', error);
+                console.error('Error sending PCM data to WebSocket:', error);
             }
         }
     }
 
-    // Send accumulated WebM segments (combine multiple chunks for better WebM structure)
-    async function sendAccumulatedWebMSegment() {
-        if (webmChunkBuffer.length === 0) return;
-        
-        try {
-            // Create a combined blob from accumulated chunks
-            const combinedBlob = new Blob(webmChunkBuffer, { type: 'audio/webm' });
-            await sendWebMChunk(combinedBlob, false);
-            
-            // Clear the buffer
-            webmChunkBuffer = [];
-            console.log('Sent accumulated WebM segment, buffer cleared');
-        } catch (error) {
-            console.error('Error sending accumulated WebM segment:', error);
+    // Convert Float32 audio data to 16-bit PCM
+    function convertToPCM16(float32Array) {
+        const int16Array = new Int16Array(float32Array.length);
+        for (let i = 0; i < float32Array.length; i++) {
+            // Clamp to [-1, 1] and convert to 16-bit signed integer
+            const clampedValue = Math.max(-1, Math.min(1, float32Array[i]));
+            int16Array[i] = Math.round(clampedValue * 32767);
         }
+        return int16Array.buffer;
+    }
+
+    // Combine multiple Uint8Arrays into one
+    function combineUint8Arrays(arrays) {
+        const totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0);
+        const combined = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const array of arrays) {
+            combined.set(array, offset);
+            offset += array.length;
+        }
+        return combined;
     }
 
     // Start real-time transcription mode
@@ -1354,60 +1357,42 @@ document.addEventListener('DOMContentLoaded', async function() {
             }
         }
 
-        // Set up MediaRecorder for continuous streaming
-        mediaRecorder = new MediaRecorder(stream, {
-            mimeType: 'audio/webm'
+        // Set up Web Audio API for PCM capture
+        pcmAudioContext = new (window.AudioContext || window.webkitAudioContext)({
+            sampleRate: 16000 // 16kHz sample rate as expected by backend
         });
-
-        // Handle audio chunks - send first immediately, accumulate others
-        mediaRecorder.ondataavailable = async (event) => {
-            if (event.data.size > 0) {
-                chunkCount++;
-                console.log(`Received chunk ${chunkCount}, size: ${event.data.size} bytes`);
-                
-                if (!firstChunkSent) {
-                    // First chunk contains complete WebM header - send immediately
-                    await sendWebMChunk(event.data, true);
-                    firstChunkSent = true;
-                    webmHeader = event.data; // Store header for later use
-                } else {
-                    // Accumulate subsequent chunks
-                    webmChunkBuffer.push(event.data);
-                    
-                    // Send accumulated chunks every 3 chunks (roughly 300ms of audio)
-                    if (webmChunkBuffer.length >= 3) {
-                        await sendAccumulatedWebMSegment();
-                    }
-                }
+        
+        pcmMicrophone = pcmAudioContext.createMediaStreamSource(stream);
+        
+        // Use ScriptProcessorNode for broader compatibility (AudioWorklet is newer)
+        pcmProcessor = pcmAudioContext.createScriptProcessor(4096, 1, 1);
+        
+        pcmProcessor.onaudioprocess = (event) => {
+            const inputBuffer = event.inputBuffer;
+            const inputData = inputBuffer.getChannelData(0); // Get mono channel
+            
+            // Convert Float32 to 16-bit PCM and send
+            const pcmData = convertToPCM16(inputData);
+            sendPCMData(pcmData);
+            
+            chunkCount++;
+            if (chunkCount % 10 === 0) { // Log every 10th chunk to avoid spam
+                console.log(`Sent PCM chunk ${chunkCount}, size: ${pcmData.byteLength} bytes`);
             }
         };
-
-        mediaRecorder.onstop = async () => {
-            // Send any remaining chunks before stopping
-            if (webmChunkBuffer.length > 0) {
-                await sendAccumulatedWebMSegment();
-            }
-            
-            // Reset WebM streaming state
-            firstChunkSent = false;
-            webmHeader = null;
-            webmChunkBuffer = [];
-            chunkCount = 0;
-            
-            // Stop all tracks to release microphone
-            stream.getTracks().forEach(track => track.stop());
-
-            // Clean up audio context
-            if (audioContext) {
-                audioContext.close();
-                audioContext = null;
-            }
-        };
+        
+        // Connect the audio graph
+        pcmMicrophone.connect(pcmProcessor);
+        pcmProcessor.connect(pcmAudioContext.destination);
+        
+        // Resume audio context (required by some browsers)
+        if (pcmAudioContext.state === 'suspended') {
+            await pcmAudioContext.resume();
+        }
 
         initAudioLevelMonitoring(stream);
 
-        // Start recording with small time slices for real-time streaming
-        mediaRecorder.start(100); // 100ms chunks for near real-time
+        // PCM streaming is now active
         isRecording = true;
 
         if (startConversationBtn) startConversationBtn.disabled = true;
@@ -1418,9 +1403,48 @@ document.addEventListener('DOMContentLoaded', async function() {
 
     // Stop recording conversation (handles both record and realtime modes)
     function stopConversation() {
-        if (mediaRecorder && isRecording) {
+        if (isRecording) {
             isRecording = false;
-            mediaRecorder.stop();
+            
+            // Clean up based on mode
+            if (conversationMode === 'realtime') {
+                // Clean up PCM streaming
+                if (pcmProcessor) {
+                    pcmProcessor.disconnect();
+                    pcmProcessor = null;
+                }
+                if (pcmMicrophone) {
+                    pcmMicrophone.disconnect();
+                    pcmMicrophone = null;
+                }
+                if (pcmAudioContext) {
+                    pcmAudioContext.close();
+                    pcmAudioContext = null;
+                }
+                chunkCount = 0;
+            } else {
+                // Clean up PCM recording (for record mode)
+                if (pcmProcessor) {
+                    pcmProcessor.disconnect();
+                    pcmProcessor = null;
+                }
+                if (pcmMicrophone) {
+                    pcmMicrophone.disconnect();
+                    pcmMicrophone = null;
+                }
+                if (pcmAudioContext) {
+                    // Process accumulated PCM data before cleanup
+                    if (audioChunks.length > 0) {
+                        const combinedPCM = combineUint8Arrays(audioChunks);
+                        const pcmBlob = new Blob([combinedPCM], { type: 'audio/pcm' });
+                        processConversationAudio(pcmBlob, 'microphone');
+                    }
+                    
+                    pcmAudioContext.close();
+                    pcmAudioContext = null;
+                }
+                chunkCount = 0;
+            }
 
             if (startConversationBtn) startConversationBtn.disabled = false;
             if (stopConversationBtn) stopConversationBtn.disabled = true;
@@ -1898,10 +1922,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     function clearLiveTranscription() {
         realtimeTranscription = '';
         
-        // Reset WebM streaming state
-        firstChunkSent = false;
-        webmHeader = null;
-        webmChunkBuffer = [];
+        // Reset PCM streaming state
         chunkCount = 0;
 
         if (transcriptionText) transcriptionText.classList.add('hidden');
