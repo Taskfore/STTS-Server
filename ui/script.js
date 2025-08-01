@@ -148,6 +148,11 @@ document.addEventListener('DOMContentLoaded', async function() {
     let realtimeTranscription = '';
     let reconnectAttempts = 0;
     let maxReconnectAttempts = 5;
+    let webmChunkBuffer = [];
+    let chunkCount = 0;
+    let sendInterval = null;
+    let firstChunkSent = false;
+    let webmHeader = null;
 
 
     // Handle voice mode selection visual feedback
@@ -1307,6 +1312,36 @@ document.addEventListener('DOMContentLoaded', async function() {
         if (audioLevelContainer) audioLevelContainer.classList.remove('hidden');
     }
 
+    // Send WebM chunk to WebSocket
+    async function sendWebMChunk(chunk, isFirst = false) {
+        if (websocket && websocket.readyState === WebSocket.OPEN) {
+            try {
+                const arrayBuffer = await chunk.arrayBuffer();
+                console.log(`Sending ${isFirst ? 'first' : 'accumulated'} WebM chunk: ${arrayBuffer.byteLength} bytes`);
+                websocket.send(arrayBuffer);
+            } catch (error) {
+                console.error('Error sending WebM chunk to WebSocket:', error);
+            }
+        }
+    }
+
+    // Send accumulated WebM segments (combine multiple chunks for better WebM structure)
+    async function sendAccumulatedWebMSegment() {
+        if (webmChunkBuffer.length === 0) return;
+        
+        try {
+            // Create a combined blob from accumulated chunks
+            const combinedBlob = new Blob(webmChunkBuffer, { type: 'audio/webm' });
+            await sendWebMChunk(combinedBlob, false);
+            
+            // Clear the buffer
+            webmChunkBuffer = [];
+            console.log('Sent accumulated WebM segment, buffer cleared');
+        } catch (error) {
+            console.error('Error sending accumulated WebM segment:', error);
+        }
+    }
+
     // Start real-time transcription mode
     async function startRealtimeTranscription(stream) {
         // Ensure WebSocket is connected
@@ -1324,25 +1359,41 @@ document.addEventListener('DOMContentLoaded', async function() {
             mimeType: 'audio/webm'
         });
 
-        // Stream audio chunks to WebSocket in real-time
+        // Handle audio chunks - send first immediately, accumulate others
         mediaRecorder.ondataavailable = async (event) => {
-            if (event.data.size > 0 && websocket && websocket.readyState === WebSocket.OPEN) {
-                try {
-                    // Convert to ArrayBuffer and send as binary data
-                    const arrayBuffer = await event.data.arrayBuffer();
-                    console.log("Audio buffer", arrayBuffer);
-
-                    // NOTE: WebSocket STT endpoint expects 16-bit PCM, 16kHz format
-                    // Currently sending webm data - server handles conversion
-                    // For production, consider client-side audio format conversion using Web Audio API
-                    websocket.send(arrayBuffer);
-                } catch (error) {
-                    console.error('Error sending audio to WebSocket:', error);
+            if (event.data.size > 0) {
+                chunkCount++;
+                console.log(`Received chunk ${chunkCount}, size: ${event.data.size} bytes`);
+                
+                if (!firstChunkSent) {
+                    // First chunk contains complete WebM header - send immediately
+                    await sendWebMChunk(event.data, true);
+                    firstChunkSent = true;
+                    webmHeader = event.data; // Store header for later use
+                } else {
+                    // Accumulate subsequent chunks
+                    webmChunkBuffer.push(event.data);
+                    
+                    // Send accumulated chunks every 3 chunks (roughly 300ms of audio)
+                    if (webmChunkBuffer.length >= 3) {
+                        await sendAccumulatedWebMSegment();
+                    }
                 }
             }
         };
 
-        mediaRecorder.onstop = () => {
+        mediaRecorder.onstop = async () => {
+            // Send any remaining chunks before stopping
+            if (webmChunkBuffer.length > 0) {
+                await sendAccumulatedWebMSegment();
+            }
+            
+            // Reset WebM streaming state
+            firstChunkSent = false;
+            webmHeader = null;
+            webmChunkBuffer = [];
+            chunkCount = 0;
+            
             // Stop all tracks to release microphone
             stream.getTracks().forEach(track => track.stop());
 
@@ -1846,6 +1897,12 @@ document.addEventListener('DOMContentLoaded', async function() {
     // Clear live transcription
     function clearLiveTranscription() {
         realtimeTranscription = '';
+        
+        // Reset WebM streaming state
+        firstChunkSent = false;
+        webmHeader = null;
+        webmChunkBuffer = [];
+        chunkCount = 0;
 
         if (transcriptionText) transcriptionText.classList.add('hidden');
         if (transcriptionPlaceholder) transcriptionPlaceholder.classList.remove('hidden');
