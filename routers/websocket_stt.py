@@ -237,62 +237,47 @@ async def websocket_transcribe(
     Returns JSON messages with transcription results.
     """
     await websocket.accept()
-    
-    # Get STT engine from app state
-    if not hasattr(websocket.app.state, 'stt_engine'):
-        await websocket.send_json({
-            "type": "error",
-            "message": "STT engine not initialized"
-        })
-        await websocket.close()
-        return
-    
+
     stt_engine = websocket.app.state.stt_engine
-    
-    if not stt_engine.model_loaded:
-        await websocket.send_json({
-            "type": "error",
-            "message": "STT engine not available"
-        })
-        await websocket.close()
+
+    if not await check_all_good(websocket, stt_engine):
         return
-    
     logger.info(f"WebSocket STT connection established, language: {language}")
-    
+
     # Initialize optimized real-time STT processor
     realtime_stt = OptimizedRealtimeSTT(stt_engine, language)
-    
+
     try:
         await websocket.send_json({
             "type": "ready",
             "message": "Real-time transcription ready"
         })
-        
+
         while True:
             # Receive audio data
             data = await websocket.receive()
-            
+
             if data["type"] == "websocket.disconnect":
                 break
-                
+
             if data["type"] == "websocket.receive":
                 if "bytes" in data:
                     # Process audio chunk
                     transcription = await realtime_stt.process_audio_chunk(data["bytes"])
-                    
+
                     if transcription:
                         await websocket.send_json({
                             "type": "transcription",
                             "text": transcription,
                             "language": language,
-                            "partial": False  # Could implement partial results
+                            "partial": True  # Could implement partial results
                         })
-                        
+
                 elif "text" in data:
                     # Handle text commands
                     try:
                         command = json.loads(data["text"])
-                        
+
                         if command.get("action") == "clear":
                             realtime_stt.audio_buffer.clear()
                             realtime_stt.webm_accumulator.clear()
@@ -302,19 +287,19 @@ async def websocket_transcribe(
                                 "type": "cleared",
                                 "message": "Audio buffer cleared"
                             })
-                            
+
                         elif command.get("action") == "ping":
                             await websocket.send_json({
                                 "type": "pong",
                                 "message": "WebSocket connection active"
                             })
-                            
+
                     except json.JSONDecodeError:
                         await websocket.send_json({
                             "type": "error",
                             "message": "Invalid command format"
                         })
-                        
+
     except WebSocketDisconnect:
         logger.info("WebSocket STT connection closed")
     except Exception as e:
@@ -328,3 +313,24 @@ async def websocket_transcribe(
             pass
     finally:
         logger.info("WebSocket STT session ended")
+
+
+async def check_all_good(websocket, stt_engine) -> bool:
+    # Get STT engine from app state
+    if not hasattr(websocket.app.state, 'stt_engine'):
+        await websocket.send_json({
+            "type": "error",
+            "message": "STT engine not initialized"
+        })
+        await websocket.close()
+        return False
+
+    if not stt_engine.model_loaded:
+        await websocket.send_json({
+            "type": "error",
+            "message": "STT engine not available"
+        })
+        await websocket.close()
+        return False
+    return True
+
