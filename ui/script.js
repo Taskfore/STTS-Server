@@ -1275,33 +1275,30 @@ document.addEventListener('DOMContentLoaded', async function() {
     async function startRecordAndProcess(stream) {
         audioChunks = [];
         
-        // Use same PCM approach as real-time mode for consistency
-        pcmAudioContext = new (window.AudioContext || window.webkitAudioContext)({
-            sampleRate: 16000 // 16kHz sample rate
-        });
+        // Initialize audio level monitoring first to create audioContext
+        initAudioLevelMonitoring(stream);
         
-        pcmMicrophone = pcmAudioContext.createMediaStreamSource(stream);
-        pcmProcessor = pcmAudioContext.createScriptProcessor(4096, 1, 1);
+        // Now use the audioContext from audio level monitoring
+        pcmMicrophone = audioContext.createMediaStreamSource(stream);
+        pcmProcessor = audioContext.createScriptProcessor(4096, 1, 1);
         
         pcmProcessor.onaudioprocess = (event) => {
             const inputBuffer = event.inputBuffer;
             const inputData = inputBuffer.getChannelData(0); // Get mono channel
             
+            // Resample to 16kHz if needed (most browsers use 44.1kHz or 48kHz)
+            const resampledData = resampleToTargetRate(inputData, inputBuffer.sampleRate, 16000);
+            
             // Convert Float32 to 16-bit PCM and store
-            const pcmData = convertToPCM16(inputData);
+            const pcmData = convertToPCM16(resampledData);
             audioChunks.push(new Uint8Array(pcmData));
         };
         
         // Connect the audio graph
         pcmMicrophone.connect(pcmProcessor);
-        pcmProcessor.connect(pcmAudioContext.destination);
+        pcmProcessor.connect(audioContext.destination);
         
-        // Resume audio context (required by some browsers)
-        if (pcmAudioContext.state === 'suspended') {
-            await pcmAudioContext.resume();
-        }
-
-        initAudioLevelMonitoring(stream);
+        // Audio context is already initialized above
         isRecording = true;
 
         if (startConversationBtn) startConversationBtn.disabled = true;
@@ -1345,6 +1342,30 @@ document.addEventListener('DOMContentLoaded', async function() {
         return combined;
     }
 
+    // Simple linear resampling to target sample rate
+    function resampleToTargetRate(inputData, inputSampleRate, targetSampleRate) {
+        if (inputSampleRate === targetSampleRate) {
+            return inputData; // No resampling needed
+        }
+        
+        const ratio = inputSampleRate / targetSampleRate;
+        const outputLength = Math.round(inputData.length / ratio);
+        const outputData = new Float32Array(outputLength);
+        
+        for (let i = 0; i < outputLength; i++) {
+            const inputIndex = i * ratio;
+            const inputIndexFloor = Math.floor(inputIndex);
+            const inputIndexCeil = Math.min(inputIndexFloor + 1, inputData.length - 1);
+            const fraction = inputIndex - inputIndexFloor;
+            
+            // Linear interpolation
+            outputData[i] = inputData[inputIndexFloor] * (1 - fraction) + 
+                           inputData[inputIndexCeil] * fraction;
+        }
+        
+        return outputData;
+    }
+
     // Start real-time transcription mode
     async function startRealtimeTranscription(stream) {
         // Ensure WebSocket is connected
@@ -1357,22 +1378,24 @@ document.addEventListener('DOMContentLoaded', async function() {
             }
         }
 
-        // Set up Web Audio API for PCM capture
-        pcmAudioContext = new (window.AudioContext || window.webkitAudioContext)({
-            sampleRate: 16000 // 16kHz sample rate as expected by backend
-        });
+        // Initialize audio level monitoring first to create audioContext
+        initAudioLevelMonitoring(stream);
         
-        pcmMicrophone = pcmAudioContext.createMediaStreamSource(stream);
+        // Now use the audioContext from audio level monitoring
+        pcmMicrophone = audioContext.createMediaStreamSource(stream);
         
         // Use ScriptProcessorNode for broader compatibility (AudioWorklet is newer)
-        pcmProcessor = pcmAudioContext.createScriptProcessor(4096, 1, 1);
+        pcmProcessor = audioContext.createScriptProcessor(4096, 1, 1);
         
         pcmProcessor.onaudioprocess = (event) => {
             const inputBuffer = event.inputBuffer;
             const inputData = inputBuffer.getChannelData(0); // Get mono channel
             
+            // Resample to 16kHz if needed (most browsers use 44.1kHz or 48kHz)
+            const resampledData = resampleToTargetRate(inputData, inputBuffer.sampleRate, 16000);
+            
             // Convert Float32 to 16-bit PCM and send
-            const pcmData = convertToPCM16(inputData);
+            const pcmData = convertToPCM16(resampledData);
             sendPCMData(pcmData);
             
             chunkCount++;
@@ -1383,14 +1406,9 @@ document.addEventListener('DOMContentLoaded', async function() {
         
         // Connect the audio graph
         pcmMicrophone.connect(pcmProcessor);
-        pcmProcessor.connect(pcmAudioContext.destination);
+        pcmProcessor.connect(audioContext.destination);
         
-        // Resume audio context (required by some browsers)
-        if (pcmAudioContext.state === 'suspended') {
-            await pcmAudioContext.resume();
-        }
-
-        initAudioLevelMonitoring(stream);
+        // Audio context is already initialized above
 
         // PCM streaming is now active
         isRecording = true;
@@ -1417,10 +1435,7 @@ document.addEventListener('DOMContentLoaded', async function() {
                     pcmMicrophone.disconnect();
                     pcmMicrophone = null;
                 }
-                if (pcmAudioContext) {
-                    pcmAudioContext.close();
-                    pcmAudioContext = null;
-                }
+                // audioContext cleanup is handled elsewhere
                 chunkCount = 0;
             } else {
                 // Clean up PCM recording (for record mode)
@@ -1432,17 +1447,13 @@ document.addEventListener('DOMContentLoaded', async function() {
                     pcmMicrophone.disconnect();
                     pcmMicrophone = null;
                 }
-                if (pcmAudioContext) {
-                    // Process accumulated PCM data before cleanup
-                    if (audioChunks.length > 0) {
-                        const combinedPCM = combineUint8Arrays(audioChunks);
-                        const pcmBlob = new Blob([combinedPCM], { type: 'audio/pcm' });
-                        processConversationAudio(pcmBlob, 'microphone');
-                    }
-                    
-                    pcmAudioContext.close();
-                    pcmAudioContext = null;
+                // Process accumulated PCM data before cleanup
+                if (audioChunks.length > 0) {
+                    const combinedPCM = combineUint8Arrays(audioChunks);
+                    const pcmBlob = new Blob([combinedPCM], { type: 'audio/pcm' });
+                    processConversationAudio(pcmBlob, 'microphone');
                 }
+                // audioContext cleanup is handled elsewhere
                 chunkCount = 0;
             }
 
