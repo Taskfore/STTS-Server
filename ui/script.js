@@ -154,9 +154,10 @@ document.addEventListener('DOMContentLoaded', async function() {
     let chunkCount = 0;
     let transcriptionLines = [];
     let maxTranscriptionLines = 50; // Limit to prevent memory issues
-    let lastTranscriptionText = '';
-    let transcriptionDebounceTimer = null;
-    let transcriptionDebounceDelay = 2000; // 2 seconds debounce
+    let currentTranscriptionText = ''; // Current ongoing transcription
+    let lastFinalizedText = ''; // Last finalized line
+    let finalizationTimer = null;
+    let finalizationDelay = 3000; // 3 seconds to finalize a line
     let currentMediaStream = null; // Track the media stream for proper cleanup
 
 
@@ -1433,10 +1434,10 @@ document.addEventListener('DOMContentLoaded', async function() {
         if (isRecording) {
             isRecording = false;
             
-            // Clear any pending debounce timers
-            if (transcriptionDebounceTimer) {
-                clearTimeout(transcriptionDebounceTimer);
-                transcriptionDebounceTimer = null;
+            // Clear any pending finalization timers
+            if (finalizationTimer) {
+                clearTimeout(finalizationTimer);
+                finalizationTimer = null;
             }
             
             // Clean up audio nodes
@@ -1894,7 +1895,7 @@ document.addEventListener('DOMContentLoaded', async function() {
             case 'transcription':
                 console.log("Wsocket transcription data", data);
                 if (data.text && data.text.trim()) {
-                    updateLiveTranscriptionDebounced(data.text.trim());
+                    updateCumulativeTranscription(data.text.trim());
                 }
                 break;
 
@@ -1916,64 +1917,58 @@ document.addEventListener('DOMContentLoaded', async function() {
         }
     }
 
-    // Debounced transcription update to accumulate longer phrases
-    function updateLiveTranscriptionDebounced(newText) {
-        // Update the last transcription text
-        lastTranscriptionText = newText;
+    // Handle cumulative transcription updates from backend
+    function updateCumulativeTranscription(newText) {
+        if (!newText || !newText.trim()) return;
         
-        // Clear existing timer
-        if (transcriptionDebounceTimer) {
-            clearTimeout(transcriptionDebounceTimer);
+        const cleanText = newText.trim();
+        
+        // Check if this is a completely new phrase (backend changed context)
+        if (isNewPhrase(cleanText)) {
+            // Finalize current transcription immediately
+            finalizeCurrentTranscription();
         }
         
-        // Set new timer to wait for more text
-        transcriptionDebounceTimer = setTimeout(() => {
-            // Only add a new line if the text is significantly different or longer
-            if (lastTranscriptionText && lastTranscriptionText.trim().length > 0) {
-                updateLiveTranscription(lastTranscriptionText);
-            }
-            transcriptionDebounceTimer = null;
-        }, transcriptionDebounceDelay);
+        // Update current transcription
+        currentTranscriptionText = cleanText;
         
-        // For immediate feedback, show the current text without creating a new line
-        updateCurrentTranscriptionPreview(newText);
-    }
-
-    // Show current transcription as preview without adding to lines
-    function updateCurrentTranscriptionPreview(newText) {
-        if (!transcriptionText || !transcriptionPlaceholder) return;
-        
-        // Show transcription text, hide placeholder
-        transcriptionPlaceholder.classList.add('hidden');
-        transcriptionText.classList.remove('hidden');
-        
-        // Render existing lines plus current preview
-        const existingLinesHTML = transcriptionLines.map(line => 
-            `<div class="transcription-line mb-2">
-                <span class="timestamp text-xs text-gray-500 dark:text-gray-400 mr-2 font-mono">${line.timestamp}</span>
-                <span class="transcription-text">${escapeHtml(line.text)}</span>
-            </div>`
-        ).join('');
-        
-        // Add current preview line (with different styling)
-        const previewHTML = newText.trim() ? 
-            `<div class="transcription-line mb-2 opacity-75 italic">
-                <span class="timestamp text-xs text-gray-400 dark:text-gray-500 mr-2 font-mono">...</span>
-                <span class="transcription-text text-gray-600 dark:text-gray-300">${escapeHtml(newText.trim())}</span>
-            </div>` : '';
-        
-        transcriptionText.innerHTML = existingLinesHTML + previewHTML;
-        
-        // Auto-scroll to bottom
-        if (liveTranscriptionDisplay) {
-            liveTranscriptionDisplay.scrollTop = liveTranscriptionDisplay.scrollHeight;
+        // Reset finalization timer - keeps extending as long as transcription updates
+        if (finalizationTimer) {
+            clearTimeout(finalizationTimer);
         }
+        
+        finalizationTimer = setTimeout(() => {
+            finalizeCurrentTranscription();
+        }, finalizationDelay);
+        
+        // Update display immediately
+        updateTranscriptionDisplay();
     }
 
-    // Update live transcription display (append lines instead of replacing)
-    function updateLiveTranscription(newText) {
-        if (!transcriptionText || !transcriptionPlaceholder) return;
+    // Detect if the new text represents a completely new phrase
+    function isNewPhrase(newText) {
+        if (!currentTranscriptionText) return false;
+        
+        // If new text is much shorter than current, it's likely a new phrase
+        if (newText.length < currentTranscriptionText.length * 0.4) {
+            return true;
+        }
+        
+        // If new text doesn't contain the beginning of current text, it's new
+        const currentStart = currentTranscriptionText.slice(0, Math.min(20, currentTranscriptionText.length));
+        if (currentStart.length > 5 && !newText.toLowerCase().includes(currentStart.toLowerCase())) {
+            return true;
+        }
+        
+        return false;
+    }
 
+    // Finalize current transcription as a completed line
+    function finalizeCurrentTranscription() {
+        if (!currentTranscriptionText || currentTranscriptionText === lastFinalizedText) {
+            return;
+        }
+        
         // Create timestamped transcription line
         const timestamp = new Date().toLocaleTimeString('en-US', { 
             hour12: false, 
@@ -1984,55 +1979,82 @@ document.addEventListener('DOMContentLoaded', async function() {
         
         const transcriptionLine = {
             timestamp: timestamp,
-            text: newText.trim(),
-            id: Date.now() // Unique identifier
+            text: currentTranscriptionText,
+            id: Date.now()
         };
 
-        // Add new line to array
+        // Add to finalized lines
         transcriptionLines.push(transcriptionLine);
-
+        
         // Limit lines to prevent memory issues
         if (transcriptionLines.length > maxTranscriptionLines) {
-            transcriptionLines.shift(); // Remove oldest line
+            transcriptionLines.shift();
         }
-
-        // Update realtimeTranscription to be the combined text for speech generation
+        
+        // Update state
+        lastFinalizedText = currentTranscriptionText;
         realtimeTranscription = transcriptionLines.map(line => line.text).join(' ');
+        
+        // Clear finalization timer
+        if (finalizationTimer) {
+            clearTimeout(finalizationTimer);
+            finalizationTimer = null;
+        }
+        
+        console.log('Finalized transcription line:', currentTranscriptionText);
+        
+        // Update display
+        updateTranscriptionDisplay();
+    }
 
+    // Update the transcription display
+    function updateTranscriptionDisplay() {
+        if (!transcriptionText || !transcriptionPlaceholder) return;
+        
         // Show transcription text, hide placeholder
         transcriptionPlaceholder.classList.add('hidden');
         transcriptionText.classList.remove('hidden');
-
-        // Render all transcription lines with timestamps
-        const transcriptionHTML = transcriptionLines.map(line => 
+        
+        // Render finalized lines
+        const finalizedHTML = transcriptionLines.map(line => 
             `<div class="transcription-line mb-2">
                 <span class="timestamp text-xs text-gray-500 dark:text-gray-400 mr-2 font-mono">${line.timestamp}</span>
                 <span class="transcription-text">${escapeHtml(line.text)}</span>
             </div>`
         ).join('');
         
-        transcriptionText.innerHTML = transcriptionHTML;
-
-        // Update word count (total across all lines)
-        const totalWords = realtimeTranscription.split(/\s+/).filter(word => word.length > 0).length;
+        // Add current ongoing transcription (if different from last finalized)
+        const currentHTML = (currentTranscriptionText && currentTranscriptionText !== lastFinalizedText) ? 
+            `<div class="transcription-line mb-2 opacity-75 italic">
+                <span class="timestamp text-xs text-gray-400 dark:text-gray-500 mr-2 font-mono">...</span>
+                <span class="transcription-text text-gray-600 dark:text-gray-300">${escapeHtml(currentTranscriptionText)}</span>
+            </div>` : '';
+        
+        transcriptionText.innerHTML = finalizedHTML + currentHTML;
+        
+        // Update word count (total across finalized + current)
+        const totalText = realtimeTranscription + (currentTranscriptionText && currentTranscriptionText !== lastFinalizedText ? ' ' + currentTranscriptionText : '');
+        const totalWords = totalText.split(/\s+/).filter(word => word.length > 0).length;
         if (transcriptionWordCount) {
             transcriptionWordCount.textContent = `${totalWords} words`;
         }
 
-        // Show generate speech button if there's text
+        // Show generate speech button if there's content
         if (generateSpeechFromTranscriptionBtn) {
-            if (transcriptionLines.length > 0) {
+            const hasContent = transcriptionLines.length > 0 || currentTranscriptionText.length > 0;
+            if (hasContent) {
                 generateSpeechFromTranscriptionBtn.classList.remove('hidden');
             } else {
                 generateSpeechFromTranscriptionBtn.classList.add('hidden');
             }
         }
 
-        // Auto-scroll to bottom to show latest transcription
+        // Auto-scroll to bottom
         if (liveTranscriptionDisplay) {
             liveTranscriptionDisplay.scrollTop = liveTranscriptionDisplay.scrollHeight;
         }
     }
+
 
     // Helper function to escape HTML characters
     function escapeHtml(text) {
@@ -2045,12 +2067,13 @@ document.addEventListener('DOMContentLoaded', async function() {
     function clearLiveTranscription() {
         realtimeTranscription = '';
         transcriptionLines = []; // Clear all transcription lines
-        lastTranscriptionText = '';
+        currentTranscriptionText = '';
+        lastFinalizedText = '';
         
-        // Clear any pending debounce timers
-        if (transcriptionDebounceTimer) {
-            clearTimeout(transcriptionDebounceTimer);
-            transcriptionDebounceTimer = null;
+        // Clear any pending finalization timers
+        if (finalizationTimer) {
+            clearTimeout(finalizationTimer);
+            finalizationTimer = null;
         }
         
         // Reset PCM streaming state
