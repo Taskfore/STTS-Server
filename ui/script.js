@@ -154,6 +154,10 @@ document.addEventListener('DOMContentLoaded', async function() {
     let chunkCount = 0;
     let transcriptionLines = [];
     let maxTranscriptionLines = 50; // Limit to prevent memory issues
+    let lastTranscriptionText = '';
+    let transcriptionDebounceTimer = null;
+    let transcriptionDebounceDelay = 2000; // 2 seconds debounce
+    let currentMediaStream = null; // Track the media stream for proper cleanup
 
 
     // Handle voice mode selection visual feedback
@@ -1276,6 +1280,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     // Start record and process mode (now also uses PCM for consistency)
     async function startRecordAndProcess(stream) {
         audioChunks = [];
+        currentMediaStream = stream; // Store for cleanup
         
         // Initialize audio level monitoring first to create audioContext
         initAudioLevelMonitoring(stream);
@@ -1380,6 +1385,8 @@ document.addEventListener('DOMContentLoaded', async function() {
             }
         }
 
+        currentMediaStream = stream; // Store for cleanup
+        
         // Initialize audio level monitoring first to create audioContext
         initAudioLevelMonitoring(stream);
         
@@ -1426,38 +1433,48 @@ document.addEventListener('DOMContentLoaded', async function() {
         if (isRecording) {
             isRecording = false;
             
-            // Clean up based on mode
-            if (conversationMode === 'realtime') {
-                // Clean up PCM streaming
-                if (pcmProcessor) {
-                    pcmProcessor.disconnect();
-                    pcmProcessor = null;
-                }
-                if (pcmMicrophone) {
-                    pcmMicrophone.disconnect();
-                    pcmMicrophone = null;
-                }
-                // audioContext cleanup is handled elsewhere
-                chunkCount = 0;
-            } else {
-                // Clean up PCM recording (for record mode)
-                if (pcmProcessor) {
-                    pcmProcessor.disconnect();
-                    pcmProcessor = null;
-                }
-                if (pcmMicrophone) {
-                    pcmMicrophone.disconnect();
-                    pcmMicrophone = null;
-                }
-                // Process accumulated PCM data before cleanup
-                if (audioChunks.length > 0) {
-                    const combinedPCM = combineUint8Arrays(audioChunks);
-                    const pcmBlob = new Blob([combinedPCM], { type: 'audio/pcm' });
-                    processConversationAudio(pcmBlob, 'microphone');
-                }
-                // audioContext cleanup is handled elsewhere
-                chunkCount = 0;
+            // Clear any pending debounce timers
+            if (transcriptionDebounceTimer) {
+                clearTimeout(transcriptionDebounceTimer);
+                transcriptionDebounceTimer = null;
             }
+            
+            // Clean up audio nodes
+            if (pcmProcessor) {
+                pcmProcessor.disconnect();
+                pcmProcessor = null;
+            }
+            if (pcmMicrophone) {
+                pcmMicrophone.disconnect();
+                pcmMicrophone = null;
+            }
+            
+            // Stop media stream tracks properly
+            if (currentMediaStream) {
+                currentMediaStream.getTracks().forEach(track => {
+                    track.stop();
+                    console.log('Stopped media track:', track.kind);
+                });
+                currentMediaStream = null;
+            }
+            
+            // Clean up audio context
+            if (audioContext && audioContext.state !== 'closed') {
+                audioContext.close();
+                audioContext = null;
+                console.log('Closed AudioContext');
+            }
+            
+            // Handle record mode data processing
+            if (conversationMode === 'record' && audioChunks.length > 0) {
+                const combinedPCM = combineUint8Arrays(audioChunks);
+                const pcmBlob = new Blob([combinedPCM], { type: 'audio/pcm' });
+                processConversationAudio(pcmBlob, 'microphone');
+            }
+            
+            // Reset state
+            chunkCount = 0;
+            audioChunks = [];
 
             if (startConversationBtn) startConversationBtn.disabled = false;
             if (stopConversationBtn) stopConversationBtn.disabled = true;
@@ -1877,7 +1894,7 @@ document.addEventListener('DOMContentLoaded', async function() {
             case 'transcription':
                 console.log("Wsocket transcription data", data);
                 if (data.text && data.text.trim()) {
-                    updateLiveTranscription(data.text.trim());
+                    updateLiveTranscriptionDebounced(data.text.trim());
                 }
                 break;
 
@@ -1896,6 +1913,60 @@ document.addEventListener('DOMContentLoaded', async function() {
 
             default:
                 console.log('Unknown WebSocket message type:', data.type);
+        }
+    }
+
+    // Debounced transcription update to accumulate longer phrases
+    function updateLiveTranscriptionDebounced(newText) {
+        // Update the last transcription text
+        lastTranscriptionText = newText;
+        
+        // Clear existing timer
+        if (transcriptionDebounceTimer) {
+            clearTimeout(transcriptionDebounceTimer);
+        }
+        
+        // Set new timer to wait for more text
+        transcriptionDebounceTimer = setTimeout(() => {
+            // Only add a new line if the text is significantly different or longer
+            if (lastTranscriptionText && lastTranscriptionText.trim().length > 0) {
+                updateLiveTranscription(lastTranscriptionText);
+            }
+            transcriptionDebounceTimer = null;
+        }, transcriptionDebounceDelay);
+        
+        // For immediate feedback, show the current text without creating a new line
+        updateCurrentTranscriptionPreview(newText);
+    }
+
+    // Show current transcription as preview without adding to lines
+    function updateCurrentTranscriptionPreview(newText) {
+        if (!transcriptionText || !transcriptionPlaceholder) return;
+        
+        // Show transcription text, hide placeholder
+        transcriptionPlaceholder.classList.add('hidden');
+        transcriptionText.classList.remove('hidden');
+        
+        // Render existing lines plus current preview
+        const existingLinesHTML = transcriptionLines.map(line => 
+            `<div class="transcription-line mb-2">
+                <span class="timestamp text-xs text-gray-500 dark:text-gray-400 mr-2 font-mono">${line.timestamp}</span>
+                <span class="transcription-text">${escapeHtml(line.text)}</span>
+            </div>`
+        ).join('');
+        
+        // Add current preview line (with different styling)
+        const previewHTML = newText.trim() ? 
+            `<div class="transcription-line mb-2 opacity-75 italic">
+                <span class="timestamp text-xs text-gray-400 dark:text-gray-500 mr-2 font-mono">...</span>
+                <span class="transcription-text text-gray-600 dark:text-gray-300">${escapeHtml(newText.trim())}</span>
+            </div>` : '';
+        
+        transcriptionText.innerHTML = existingLinesHTML + previewHTML;
+        
+        // Auto-scroll to bottom
+        if (liveTranscriptionDisplay) {
+            liveTranscriptionDisplay.scrollTop = liveTranscriptionDisplay.scrollHeight;
         }
     }
 
@@ -1974,6 +2045,13 @@ document.addEventListener('DOMContentLoaded', async function() {
     function clearLiveTranscription() {
         realtimeTranscription = '';
         transcriptionLines = []; // Clear all transcription lines
+        lastTranscriptionText = '';
+        
+        // Clear any pending debounce timers
+        if (transcriptionDebounceTimer) {
+            clearTimeout(transcriptionDebounceTimer);
+            transcriptionDebounceTimer = null;
+        }
         
         // Reset PCM streaming state
         chunkCount = 0;
