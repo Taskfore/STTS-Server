@@ -152,6 +152,8 @@ document.addEventListener('DOMContentLoaded', async function() {
     let pcmAudioContext = null;
     let pcmMicrophone = null;
     let chunkCount = 0;
+    let transcriptionLines = [];
+    let maxTranscriptionLines = 50; // Limit to prevent memory issues
 
 
     // Handle voice mode selection visual feedback
@@ -1897,46 +1899,89 @@ document.addEventListener('DOMContentLoaded', async function() {
         }
     }
 
-    // Update live transcription display
+    // Update live transcription display (append lines instead of replacing)
     function updateLiveTranscription(newText) {
         if (!transcriptionText || !transcriptionPlaceholder) return;
 
-        realtimeTranscription = newText;
+        // Create timestamped transcription line
+        const timestamp = new Date().toLocaleTimeString('en-US', { 
+            hour12: false, 
+            hour: '2-digit', 
+            minute: '2-digit', 
+            second: '2-digit' 
+        });
+        
+        const transcriptionLine = {
+            timestamp: timestamp,
+            text: newText.trim(),
+            id: Date.now() // Unique identifier
+        };
+
+        // Add new line to array
+        transcriptionLines.push(transcriptionLine);
+
+        // Limit lines to prevent memory issues
+        if (transcriptionLines.length > maxTranscriptionLines) {
+            transcriptionLines.shift(); // Remove oldest line
+        }
+
+        // Update realtimeTranscription to be the combined text for speech generation
+        realtimeTranscription = transcriptionLines.map(line => line.text).join(' ');
 
         // Show transcription text, hide placeholder
         transcriptionPlaceholder.classList.add('hidden');
         transcriptionText.classList.remove('hidden');
-        transcriptionText.textContent = newText;
 
-        // Update word count
-        const wordCount = newText.split(/\s+/).filter(word => word.length > 0).length;
+        // Render all transcription lines with timestamps
+        const transcriptionHTML = transcriptionLines.map(line => 
+            `<div class="transcription-line mb-2">
+                <span class="timestamp text-xs text-gray-500 dark:text-gray-400 mr-2 font-mono">${line.timestamp}</span>
+                <span class="transcription-text">${escapeHtml(line.text)}</span>
+            </div>`
+        ).join('');
+        
+        transcriptionText.innerHTML = transcriptionHTML;
+
+        // Update word count (total across all lines)
+        const totalWords = realtimeTranscription.split(/\s+/).filter(word => word.length > 0).length;
         if (transcriptionWordCount) {
-            transcriptionWordCount.textContent = `${wordCount} words`;
+            transcriptionWordCount.textContent = `${totalWords} words`;
         }
 
         // Show generate speech button if there's text
         if (generateSpeechFromTranscriptionBtn) {
-            if (newText.length > 0) {
+            if (transcriptionLines.length > 0) {
                 generateSpeechFromTranscriptionBtn.classList.remove('hidden');
             } else {
                 generateSpeechFromTranscriptionBtn.classList.add('hidden');
             }
         }
 
-        // Auto-scroll to bottom
+        // Auto-scroll to bottom to show latest transcription
         if (liveTranscriptionDisplay) {
             liveTranscriptionDisplay.scrollTop = liveTranscriptionDisplay.scrollHeight;
         }
     }
 
+    // Helper function to escape HTML characters
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
     // Clear live transcription
     function clearLiveTranscription() {
         realtimeTranscription = '';
+        transcriptionLines = []; // Clear all transcription lines
         
         // Reset PCM streaming state
         chunkCount = 0;
 
-        if (transcriptionText) transcriptionText.classList.add('hidden');
+        if (transcriptionText) {
+            transcriptionText.classList.add('hidden');
+            transcriptionText.innerHTML = ''; // Clear HTML content
+        }
         if (transcriptionPlaceholder) transcriptionPlaceholder.classList.remove('hidden');
         if (generateSpeechFromTranscriptionBtn) generateSpeechFromTranscriptionBtn.classList.add('hidden');
         if (transcriptionWordCount) transcriptionWordCount.textContent = '0 words';
