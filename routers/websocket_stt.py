@@ -5,7 +5,6 @@ import asyncio
 import logging
 import json
 import threading
-import queue
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 from collections import deque
@@ -14,6 +13,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 import numpy as np
 
 from stt_engine import STTEngine
+from models import TranscriptionResult
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +121,6 @@ class OptimizedRealtimeSTT:
     async def process_audio_chunk(self, audio_data: bytes) -> Optional[str]:
         """Process incoming PCM audio chunk."""
         try:
-            self.chunk_count += 1
             logger.debug(f"Received PCM chunk {self.chunk_count}, size: {len(audio_data)} bytes")
             
             # Convert PCM to numpy array directly
@@ -133,7 +132,8 @@ class OptimizedRealtimeSTT:
             
             # Add to optimized buffer
             self.audio_buffer.add_audio(audio_np)
-            
+            self.chunk_count += 1
+
             # Process every N chunks to accumulate enough audio
             if self.chunk_count % self.process_every_n_chunks != 0:
                 return None
@@ -153,16 +153,20 @@ class OptimizedRealtimeSTT:
                 
                 # Transcribe using dedicated thread pool
                 loop = asyncio.get_event_loop()
-                transcription = await loop.run_in_executor(
+                transcription_result = await loop.run_in_executor(
                     TRANSCRIPTION_THREAD_POOL,
                     self._transcribe_numpy_audio,
                     recent_audio
                 )
                 
-                # Only return if transcription changed significantly
-                if transcription and transcription != self.last_transcription:
-                    self.last_transcription = transcription
-                    return transcription
+                # Extract text and timing information
+                if transcription_result and isinstance(transcription_result, TranscriptionResult):
+                    transcription_text = transcription_result.text.strip()
+                    
+                    # Only return if transcription changed significantly
+                    if transcription_text and transcription_text != self.last_transcription:
+                        self.last_transcription = transcription_text
+                        return transcription_result
                     
                 return None
                 
@@ -174,11 +178,11 @@ class OptimizedRealtimeSTT:
             self.processing = False
             return None
     
-    def _transcribe_numpy_audio(self, audio_data: np.ndarray) -> Optional[str]:
-        """Transcribe numpy audio directly using STT engine (no temp files)."""
+    def _transcribe_numpy_audio(self, audio_data: np.ndarray) -> Optional[TranscriptionResult]:
+        """Transcribe numpy audio directly using STT engine with timing information."""
         try:
-            # Use the new direct numpy transcription method
-            result = self.stt_engine.transcribe_numpy(audio_data, self.language)
+            # Use the new direct numpy transcription method with timing
+            result = self.stt_engine.transcribe_numpy_with_timing(audio_data, self.language)
             return result
         except Exception as e:
             logger.error(f"Error in numpy transcription: {e}")
@@ -227,15 +231,49 @@ async def websocket_transcribe(
             if data["type"] == "websocket.receive":
                 if "bytes" in data:
                     # Process audio chunk
-                    transcription = await realtime_stt.process_audio_chunk(data["bytes"])
+                    transcription_result = await realtime_stt.process_audio_chunk(data["bytes"])
 
-                    if transcription:
-                        await websocket.send_json({
+                    if transcription_result:
+                        # Extract text and timing information from typed result
+                        text = transcription_result.text.strip()
+                        segments = transcription_result.segments
+                        
+                        # Calculate overall timing if segments are available
+                        timing_info = None
+                        if segments:
+                            start_time = min(seg.start for seg in segments)
+                            end_time = max(seg.end for seg in segments)
+                            timing_info = {
+                                "start": start_time,
+                                "end": end_time,
+                                "duration": end_time - start_time
+                            }
+                        
+                        # Prepare enhanced response
+                        response = {
                             "type": "transcription",
-                            "text": transcription,
+                            "text": text,
                             "language": language,
-                            "partial": True  # Could implement partial results
-                        })
+                            "partial": True
+                        }
+                        
+                        # Add timing information if available
+                        if timing_info:
+                            response["timing"] = timing_info
+                        
+                        # Add segment details for more granular timing
+                        if segments:
+                            response["segments"] = [
+                                {
+                                    "text": seg.text.strip(),
+                                    "start": seg.start,
+                                    "end": seg.end
+                                }
+                                for seg in segments
+                                if seg.text.strip()
+                            ]
+                        
+                        await websocket.send_json(response)
 
                 elif "text" in data:
                     # Handle text commands
@@ -244,7 +282,6 @@ async def websocket_transcribe(
 
                         if command.get("action") == "clear":
                             realtime_stt.audio_buffer.clear()
-                            realtime_stt.webm_accumulator.clear()
                             realtime_stt.chunk_count = 0
                             realtime_stt.last_transcription = ""
                             await websocket.send_json({

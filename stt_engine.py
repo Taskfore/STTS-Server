@@ -14,6 +14,7 @@ except ImportError:
     whisper = None
 
 from config import get_stt_device, get_stt_model_size, get_stt_language
+from models import TranscriptionResult
 
 logger = logging.getLogger(__name__)
 
@@ -172,4 +173,52 @@ class STTEngine:
             
         except Exception as e:
             logger.error(f"Error during numpy transcription: {e}", exc_info=True)
+            return None
+
+    def transcribe_numpy_with_timing(self, audio_array: 'np.ndarray', language: Optional[str] = None) -> Optional[TranscriptionResult]:
+        """
+        Transcribes audio from a numpy array and returns full result with timing information.
+        
+        Args:
+            audio_array: Float32 numpy array with audio data (mono, any sample rate)
+            language: Language code or None for auto-detection
+            
+        Returns:
+            Full transcription result dict with timing information, or None if transcription fails
+        """
+        if not self.model_loaded or self.model is None:
+            logger.error("STT model is not loaded. Cannot transcribe audio.")
+            return None
+        
+        try:
+            import numpy as np
+            
+            if not isinstance(audio_array, np.ndarray):
+                logger.error("Audio input must be a numpy array")
+                return None
+            
+            if len(audio_array) == 0:
+                logger.warning("Empty audio array provided")
+                return None
+            
+            # Use configured language or auto-detection
+            detect_language = language or get_stt_language()
+            language_param = None if detect_language == "auto" else detect_language
+            
+            logger.debug(f"Transcribing numpy array with timing: shape={audio_array.shape}, dtype={audio_array.dtype}")
+            raw_result = self.model.transcribe(audio_array, language=language_param)
+            
+            logger.debug(f"Numpy transcription with timing completed. Segments: {len(raw_result.get('segments', []))}")
+            
+            # Convert raw result to our typed model
+            try:
+                transcription_result = TranscriptionResult(**raw_result)
+                return transcription_result
+            except Exception as e:
+                logger.error(f"Error converting transcription result to typed model: {e}")
+                logger.debug(f"Raw result keys: {list(raw_result.keys()) if raw_result else 'None'}")
+                return None
+            
+        except Exception as e:
+            logger.error(f"Error during numpy transcription with timing: {e}", exc_info=True)
             return None

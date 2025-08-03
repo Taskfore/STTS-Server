@@ -1,7 +1,7 @@
 # File: models.py
 # Pydantic models for API request and response validation.
 
-from typing import Optional, Literal
+from typing import Optional, Literal, List
 from pydantic import BaseModel, Field
 
 
@@ -131,3 +131,39 @@ class STTResponse(BaseModel):
 
 
 # Conversation models moved to routers - using Form parameters instead
+
+
+class TranscriptionWord(BaseModel):
+    """Model for word-level transcription timing."""
+    
+    word: str = Field(..., description="The transcribed word.")
+    start: float = Field(..., description="Start time of the word in seconds.")
+    end: float = Field(..., description="End time of the word in seconds.")
+    probability: float = Field(..., description="Confidence probability of the word.")
+
+
+class TranscriptionSegment(BaseModel):
+    """Model for segment-level transcription with timing."""
+    
+    id: int = Field(..., description="Segment ID.")
+    seek: int = Field(..., description="Seek position in the audio.")
+    start: float = Field(..., description="Start time of the segment in seconds.")
+    end: float = Field(..., description="End time of the segment in seconds.")
+    text: str = Field(..., description="Transcribed text for this segment.")
+    tokens: List[int] = Field(..., description="Token IDs used in transcription.")
+    temperature: float = Field(..., description="Temperature used for this segment.")
+    avg_logprob: float = Field(..., description="Average log probability.")
+    compression_ratio: float = Field(..., description="Compression ratio.")
+    no_speech_prob: float = Field(..., description="No speech probability.")
+    words: Optional[List[TranscriptionWord]] = Field(
+        None, 
+        description="Word-level timing information (if word_timestamps=True)."
+    )
+
+
+class TranscriptionResult(BaseModel):
+    """Complete transcription result with timing information from Whisper."""
+    
+    text: str = Field(..., description="Full transcribed text.")
+    segments: List[TranscriptionSegment] = Field(..., description="Segment-level transcription details.")
+    language: str = Field(..., description="Detected or specified language code.")

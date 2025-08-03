@@ -155,7 +155,10 @@ document.addEventListener('DOMContentLoaded', async function() {
     let transcriptionLines = [];
     let maxTranscriptionLines = 50; // Limit to prevent memory issues
     let currentTranscriptionText = ''; // Current ongoing transcription
+    let currentTranscriptionTiming = null; // Current transcription timing info
+    let currentTranscriptionSegments = null; // Current transcription segments
     let lastFinalizedText = ''; // Last finalized line
+    let lastFinalizedTiming = null; // Last finalized timing info
     let finalizationTimer = null;
     let finalizationDelay = 3000; // 3 seconds to finalize a line
     let currentMediaStream = null; // Track the media stream for proper cleanup
@@ -1203,6 +1206,16 @@ document.addEventListener('DOMContentLoaded', async function() {
 
     // Initialize audio level monitoring
     function initAudioLevelMonitoring(stream) {
+        // Clean up existing audio context if it exists
+        if (audioContext && audioContext.state !== 'closed') {
+            try {
+                audioContext.close();
+            } catch (e) {
+                console.warn('Error closing existing AudioContext:', e);
+            }
+        }
+        
+        // Create fresh AudioContext
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
         analyser = audioContext.createAnalyser();
         microphone = audioContext.createMediaStreamSource(stream);
@@ -1459,12 +1472,7 @@ document.addEventListener('DOMContentLoaded', async function() {
                 currentMediaStream = null;
             }
             
-            // Clean up audio context
-            if (audioContext && audioContext.state !== 'closed') {
-                audioContext.close();
-                audioContext = null;
-                console.log('Closed AudioContext');
-            }
+            // AudioContext cleanup is handled by initAudioLevelMonitoring on restart
             
             // Handle record mode data processing
             if (conversationMode === 'record' && audioChunks.length > 0) {
@@ -1895,7 +1903,7 @@ document.addEventListener('DOMContentLoaded', async function() {
             case 'transcription':
                 console.log("Wsocket transcription data", data);
                 if (data.text && data.text.trim()) {
-                    updateCumulativeTranscription(data.text.trim());
+                    updateCumulativeTranscription(data.text.trim(), data.timing, data.segments);
                 }
                 break;
 
@@ -1918,19 +1926,36 @@ document.addEventListener('DOMContentLoaded', async function() {
     }
 
     // Handle cumulative transcription updates from backend
-    function updateCumulativeTranscription(newText) {
+    function updateCumulativeTranscription(newText, timing, segments) {
         if (!newText || !newText.trim()) return;
         
         const cleanText = newText.trim();
         
-        // Check if this is a completely new phrase (backend changed context)
-        if (isNewPhrase(cleanText)) {
+        // Enhanced overlap detection using timing information
+        let shouldFinalizeCurrent = false;
+        
+        if (timing && timing.start !== undefined) {
+            // Check for timing-based overlap detection
+            if (isTimingOverlap(timing)) {
+                console.log('Timing overlap detected, finalizing current transcription');
+                shouldFinalizeCurrent = true;
+            }
+        } else {
+            // Fallback to text-based detection if no timing info
+            if (isNewPhrase(cleanText)) {
+                shouldFinalizeCurrent = true;
+            }
+        }
+        
+        if (shouldFinalizeCurrent) {
             // Finalize current transcription immediately
             finalizeCurrentTranscription();
         }
         
-        // Update current transcription
+        // Update current transcription with timing information
         currentTranscriptionText = cleanText;
+        currentTranscriptionTiming = timing;
+        currentTranscriptionSegments = segments;
         
         // Reset finalization timer - keeps extending as long as transcription updates
         if (finalizationTimer) {
@@ -1963,6 +1988,29 @@ document.addEventListener('DOMContentLoaded', async function() {
         return false;
     }
 
+    // Detect timing-based overlaps using audio timing information
+    function isTimingOverlap(newTiming) {
+        if (!lastFinalizedTiming || !newTiming) return false;
+        
+        // If new audio starts before the last finalized audio ended, it's likely an overlap
+        // Add a small buffer (0.5 seconds) to account for processing delays
+        const overlapThreshold = 0.5;
+        
+        if (newTiming.start < (lastFinalizedTiming.end - overlapThreshold)) {
+            console.log(`Timing overlap detected: new start ${newTiming.start}s < last end ${lastFinalizedTiming.end}s`);
+            return true;
+        }
+        
+        // If there's a significant gap (more than 2 seconds), treat as new phrase
+        const gapThreshold = 2.0;
+        if (newTiming.start > (lastFinalizedTiming.end + gapThreshold)) {
+            console.log(`Large timing gap detected: ${newTiming.start - lastFinalizedTiming.end}s gap`);
+            return true;
+        }
+        
+        return false;
+    }
+
     // Finalize current transcription as a completed line
     function finalizeCurrentTranscription() {
         if (!currentTranscriptionText || currentTranscriptionText === lastFinalizedText) {
@@ -1980,6 +2028,8 @@ document.addEventListener('DOMContentLoaded', async function() {
         const transcriptionLine = {
             timestamp: timestamp,
             text: currentTranscriptionText,
+            timing: currentTranscriptionTiming,
+            segments: currentTranscriptionSegments,
             id: Date.now()
         };
 
@@ -1993,6 +2043,7 @@ document.addEventListener('DOMContentLoaded', async function() {
         
         // Update state
         lastFinalizedText = currentTranscriptionText;
+        lastFinalizedTiming = currentTranscriptionTiming;
         realtimeTranscription = transcriptionLines.map(line => line.text).join(' ');
         
         // Clear finalization timer
@@ -2015,20 +2066,34 @@ document.addEventListener('DOMContentLoaded', async function() {
         transcriptionPlaceholder.classList.add('hidden');
         transcriptionText.classList.remove('hidden');
         
-        // Render finalized lines
-        const finalizedHTML = transcriptionLines.map(line => 
-            `<div class="transcription-line mb-2">
+        // Render finalized lines with timing information
+        const finalizedHTML = transcriptionLines.map(line => {
+            let timingDisplay = '';
+            if (line.timing && line.timing.duration !== undefined) {
+                timingDisplay = `<span class="timing-info text-xs text-blue-500 dark:text-blue-400 ml-2 font-mono">[${line.timing.duration.toFixed(1)}s]</span>`;
+            }
+            
+            return `<div class="transcription-line mb-2">
                 <span class="timestamp text-xs text-gray-500 dark:text-gray-400 mr-2 font-mono">${line.timestamp}</span>
                 <span class="transcription-text">${escapeHtml(line.text)}</span>
-            </div>`
-        ).join('');
+                ${timingDisplay}
+            </div>`;
+        }).join('');
         
         // Add current ongoing transcription (if different from last finalized)
         const currentHTML = (currentTranscriptionText && currentTranscriptionText !== lastFinalizedText) ? 
-            `<div class="transcription-line mb-2 opacity-75 italic">
-                <span class="timestamp text-xs text-gray-400 dark:text-gray-500 mr-2 font-mono">...</span>
-                <span class="transcription-text text-gray-600 dark:text-gray-300">${escapeHtml(currentTranscriptionText)}</span>
-            </div>` : '';
+            (() => {
+                let currentTimingDisplay = '';
+                if (currentTranscriptionTiming && currentTranscriptionTiming.duration !== undefined) {
+                    currentTimingDisplay = `<span class="timing-info text-xs text-blue-400 dark:text-blue-500 ml-2 font-mono">[${currentTranscriptionTiming.duration.toFixed(1)}s]</span>`;
+                }
+                
+                return `<div class="transcription-line mb-2 opacity-75 italic">
+                    <span class="timestamp text-xs text-gray-400 dark:text-gray-500 mr-2 font-mono">...</span>
+                    <span class="transcription-text text-gray-600 dark:text-gray-300">${escapeHtml(currentTranscriptionText)}</span>
+                    ${currentTimingDisplay}
+                </div>`;
+            })() : '';
         
         transcriptionText.innerHTML = finalizedHTML + currentHTML;
         
@@ -2068,7 +2133,10 @@ document.addEventListener('DOMContentLoaded', async function() {
         realtimeTranscription = '';
         transcriptionLines = []; // Clear all transcription lines
         currentTranscriptionText = '';
+        currentTranscriptionTiming = null;
+        currentTranscriptionSegments = null;
         lastFinalizedText = '';
+        lastFinalizedTiming = null;
         
         // Clear any pending finalization timers
         if (finalizationTimer) {
