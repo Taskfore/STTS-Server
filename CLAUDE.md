@@ -136,6 +136,13 @@ Audio Upload → Temporary File Storage → STT Engine (stt_engine.py) →
 Transcription → Cleanup → JSON Response
 ```
 
+**Real-time STT Pipeline (`/ws/transcribe` WebSocket):**
+```
+PCM Audio Stream → Audio Buffer → STT Engine (with timing) → 
+Overlap Detection → Enhanced Response (text + timing + segments) → 
+Frontend Display with Duration Info
+```
+
 ### Key Architectural Decisions
 
 1. **Text Chunking**: Large texts are intelligently split by sentences to prevent TTS engine overload
@@ -143,6 +150,8 @@ Transcription → Cleanup → JSON Response
 3. **Multi-platform GPU Support**: Automatic device detection with graceful fallbacks
 4. **Voice Management**: Separate directories for predefined voices (`voices/`) vs reference audio for cloning (`reference_audio/`)
 5. **Configuration Persistence**: UI state is automatically saved to `config.yaml` for session persistence
+6. **Real-time STT with Timing**: WebSocket STT provides precise timing information to prevent overlapping transcriptions
+7. **Type-Safe Models**: Pydantic models ensure strict typing for Whisper transcription results
 
 ### Directory Structure Logic
 ```
@@ -156,7 +165,7 @@ Transcription → Cleanup → JSON Response
 ├── tests/                 # Test scripts and utilities
 ├── config.py              # Configuration management with defaults
 ├── utils.py               # Shared audio/text processing utilities
-├── models.py              # Pydantic request/response models
+├── models.py              # Pydantic request/response models (includes typed Whisper results)
 ├── ui/                    # Static web interface files
 ├── voices/                # Predefined voice samples
 ├── reference_audio/       # User-uploaded voice cloning samples
@@ -169,7 +178,7 @@ Transcription → Cleanup → JSON Response
 - `POST /tts` - Full-featured TTS with all parameters
 - `POST /stt` - Speech-to-text transcription  
 - `POST /conversation` - STT→TTS pipeline for speech-to-speech
-- `WebSocket /ws/transcribe` - Real-time continuous STT
+- `WebSocket /ws/transcribe` - Real-time continuous STT with timing information
 - `POST /v1/audio/speech` - OpenAI-compatible TTS endpoint
 
 **Management Endpoints:**
@@ -220,15 +229,64 @@ from config import get_new_engine_device
 - **Memory management**: Temporary audio files cleaned up after processing
 - **GPU memory**: Chunking prevents GPU OOM on large texts
 
+### Real-time STT with Timing Enhancement
+
+#### WebSocket STT Response Format
+The `/ws/transcribe` endpoint now returns enhanced responses with timing information:
+
+```json
+{
+  "type": "transcription",
+  "text": "Hello world",
+  "language": "en",
+  "partial": true,
+  "timing": {
+    "start": 1.5,
+    "end": 3.2,
+    "duration": 1.7
+  },
+  "segments": [
+    {
+      "text": "Hello world",
+      "start": 1.5,
+      "end": 3.2
+    }
+  ]
+}
+```
+
+#### Overlap Detection Logic
+The frontend uses timing information to detect and handle overlapping transcriptions:
+
+1. **Timing-based detection**: Compares `timing.start` with previous `timing.end`
+2. **Overlap threshold**: 0.5-second buffer to account for processing delays
+3. **Gap detection**: Identifies significant gaps (>2s) as new phrases
+4. **Fallback**: Uses text-based heuristics when timing unavailable
+
+#### Type-Safe Transcription Models
+New Pydantic models in `models.py` ensure strict typing:
+
+- `TranscriptionWord`: Word-level timing and confidence
+- `TranscriptionSegment`: Complete Whisper segment with all fields
+- `TranscriptionResult`: Full typed result from `stt_engine.transcribe_numpy_with_timing()`
+
+#### Frontend Integration
+The UI displays timing information and handles overlaps:
+
+- Duration indicators: `[1.7s]` shown next to each transcription
+- Smart finalization: Uses timing to determine when to finalize lines
+- Visual feedback: Different colors for current vs finalized transcriptions
+
 ## Development Guidelines
 
 ### When adding new features:
 1. Follow the STT engine pattern (OOP + app state) for new engines
 2. Add configuration to `config.py` DEFAULT_CONFIG first
 3. Use dependency injection for clean testing
-4. Add Pydantic models for request validation
+4. Add Pydantic models for request/response validation with strict typing
 5. Include proper error handling and logging
 6. Clean up temporary resources in finally blocks
+7. For WebSocket features, consider timing information for better UX
 
 ### When modifying existing code:
 1. Don't break the existing TTS global pattern - it works
@@ -243,3 +301,5 @@ Test the full pipeline manually via the web UI and verify:
 - Voice cloning vs predefined voices
 - Configuration persistence across restarts
 - Docker deployment functionality
+- Real-time WebSocket STT with timing information display
+- Overlap detection preventing duplicate transcriptions
