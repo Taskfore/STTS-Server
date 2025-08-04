@@ -104,6 +104,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     const conversationModeRadios = document.querySelectorAll('input[name="conversation_mode"]');
     const recordModeDesc = document.querySelector('.record-mode-desc');
     const realtimeModeDesc = document.querySelector('.realtime-mode-desc');
+    const conversationModeDesc = document.querySelector('.conversation-mode-desc');
     const websocketStatusContainer = document.getElementById('websocket-status-container');
     const websocketStatus = document.getElementById('websocket-status');
     const liveTranscriptionContainer = document.getElementById('live-transcription-container');
@@ -113,6 +114,23 @@ document.addEventListener('DOMContentLoaded', async function() {
     const clearTranscriptionBtn = document.getElementById('clear-transcription-btn');
     const generateSpeechFromTranscriptionBtn = document.getElementById('generate-speech-from-transcription-btn');
     const transcriptionWordCount = document.getElementById('transcription-word-count');
+
+    // Audio Conversation Elements
+    const audioConversationSettings = document.getElementById('audio-conversation-settings');
+    const responseModeRadios = document.querySelectorAll('input[name="response_mode"]');
+    const pauseSensitivitySlider = document.getElementById('pause-sensitivity');
+    const conversationStateBadge = document.getElementById('conversation-state-badge');
+    const conversationDetails = document.getElementById('conversation-details');
+    const resetConversationBtn = document.getElementById('reset-conversation-btn');
+    const audioConversationHistory = document.getElementById('audio-conversation-history');
+    const conversationHistoryDisplay = document.getElementById('conversation-history-display');
+    const conversationHistoryPlaceholder = document.getElementById('conversation-history-placeholder');
+    const conversationMessages = document.getElementById('conversation-messages');
+    const clearConversationHistoryBtn = document.getElementById('clear-conversation-history-btn');
+    const conversationStats = document.getElementById('conversation-stats');
+    const conversationDuration = document.getElementById('conversation-duration');
+    const echoModeDesc = document.querySelector('.echo-mode-desc');
+    const templateModeDesc = document.querySelector('.template-mode-desc');
 
     // Conversation TTS Controls
     const conversationVoiceModeRadios = document.querySelectorAll('input[name="conversation_voice_mode"]');
@@ -142,7 +160,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     let dataArray = null;
 
     // WebSocket Real-time State
-    let conversationMode = 'record'; // 'record' or 'realtime'
+    let conversationMode = 'record'; // 'record', 'realtime', or 'conversation'
     let websocket = null;
     let websocketConnected = false;
     let realtimeTranscription = '';
@@ -162,6 +180,13 @@ document.addEventListener('DOMContentLoaded', async function() {
     let finalizationTimer = null;
     let finalizationDelay = 3000; // 3 seconds to finalize a line
     let currentMediaStream = null; // Track the media stream for proper cleanup
+
+    // Audio Conversation State
+    let audioConversationManager = null;
+    let currentResponseMode = 'echo';
+    let conversationHistory = [];
+    let conversationStartTime = null;
+    let conversationExchangeCount = 0;
 
 
     // Handle voice mode selection visual feedback
@@ -340,6 +365,433 @@ document.addEventListener('DOMContentLoaded', async function() {
             } else {
                 speedFactorWarningSpan.classList.add('hidden');
             }
+        }
+    }
+
+    // --- Audio Conversation Manager ---
+    class AudioConversationManager {
+        constructor() {
+            this.websocket = null;
+            this.connected = false;
+            this.conversationState = 'ready';
+            this.responseMode = 'echo';
+            this.pauseSensitivity = 2;
+            this.audioContext = null;
+            this.mediaStream = null;
+            this.pcmProcessor = null;
+            this.conversationHistory = [];
+            this.startTime = null;
+            this.reconnectAttempts = 0;
+            this.maxReconnectAttempts = 5;
+            this.reconnectDelay = 1000;
+        }
+
+        async connect() {
+            if (this.connected) return;
+
+            try {
+                // Build WebSocket URL with parameters
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const host = window.location.host || 'localhost:8004';
+                const baseWsUrl = IS_LOCAL_FILE ? 'ws://localhost:8004' : `${protocol}//${host}`;
+                
+                // Get voice settings
+                const voiceMode = document.querySelector('input[name="conversation_voice_mode"]:checked')?.value || 'predefined';
+                const predefinedVoiceId = conversationPredefinedVoiceSelect?.value || null;
+                const referenceAudioFilename = conversationCloneReferenceSelect?.value || null;
+                
+                const params = new URLSearchParams({
+                    response_mode: this.responseMode,
+                    pause_aggressiveness: this.pauseSensitivity,
+                    voice_mode: voiceMode
+                });
+                
+                if (voiceMode === 'predefined' && predefinedVoiceId && predefinedVoiceId !== 'none') {
+                    params.append('predefined_voice_id', predefinedVoiceId);
+                }
+                
+                if (voiceMode === 'clone' && referenceAudioFilename && referenceAudioFilename !== 'none') {
+                    params.append('reference_audio_filename', referenceAudioFilename);
+                }
+
+                const wsUrl = `${baseWsUrl}/ws/conversation?${params.toString()}`;
+                console.log('Connecting to audio conversation WebSocket:', wsUrl);
+
+                this.websocket = new WebSocket(wsUrl);
+                this.setupWebSocketEventHandlers();
+                
+            } catch (error) {
+                console.error('Error connecting to audio conversation WebSocket:', error);
+                this.updateConversationState('error', `Connection failed: ${error.message}`);
+                throw error;
+            }
+        }
+
+        setupWebSocketEventHandlers() {
+            this.websocket.onopen = () => {
+                console.log('Audio conversation WebSocket connected');
+                this.connected = true;
+                this.reconnectAttempts = 0;
+                this.updateWebSocketStatus('Connected');
+                this.updateConversationState('ready', 'Connected. Click "Start Speaking" to begin.');
+            };
+
+            this.websocket.onmessage = (event) => {
+                try {
+                    const message = JSON.parse(event.data);
+                    this.handleWebSocketMessage(message);
+                } catch (error) {
+                    console.error('Error parsing WebSocket message:', error);
+                }
+            };
+
+            this.websocket.onclose = (event) => {
+                console.log('Audio conversation WebSocket closed:', event.code, event.reason);
+                this.connected = false;
+                this.updateWebSocketStatus('Disconnected');
+                
+                if (event.code !== 1000 && this.reconnectAttempts < this.maxReconnectAttempts) {
+                    this.scheduleReconnect();
+                } else {
+                    this.updateConversationState('error', 'Connection lost. Please try again.');
+                }
+            };
+
+            this.websocket.onerror = (error) => {
+                console.error('Audio conversation WebSocket error:', error);
+                this.updateConversationState('error', 'WebSocket error occurred.');
+            };
+        }
+
+        handleWebSocketMessage(message) {
+            console.log('Received audio conversation message:', message);
+
+            switch (message.type) {
+                case 'ready':
+                    this.updateConversationState('ready', 'Ready for conversation.');
+                    break;
+
+                case 'conversation_state':
+                    this.handleConversationStateUpdate(message);
+                    break;
+
+                case 'transcription':
+                    this.handleTranscription(message);
+                    break;
+
+                case 'response_audio':
+                    this.handleAudioResponse(message);
+                    break;
+
+                case 'error':
+                    this.updateConversationState('error', message.message || 'Unknown error');
+                    showNotification(`Conversation error: ${message.message}`, 'error');
+                    break;
+
+                case 'reset_complete':
+                    this.resetConversationHistory();
+                    this.updateConversationState('ready', 'Conversation reset.');
+                    showNotification('Conversation reset successfully', 'success');
+                    break;
+            }
+        }
+
+        handleConversationStateUpdate(message) {
+            const state = message.state || 'ready';
+            const isListening = message.is_speaking || false;
+            
+            let stateText = '';
+            switch (state) {
+                case 'listening':
+                    stateText = isListening ? 'Listening... (speaking detected)' : 'Listening...';
+                    break;
+                case 'processing':
+                    stateText = 'Processing speech...';
+                    break;
+                case 'speaking':
+                    stateText = 'AI responding...';
+                    break;
+                default:
+                    stateText = 'Ready';
+            }
+            
+            this.updateConversationState(state, stateText);
+        }
+
+        handleTranscription(message) {
+            const text = message.text;
+            const timestamp = new Date().toLocaleTimeString();
+            
+            // Add user message to history
+            this.addMessageToHistory('user', text, timestamp, message.timing?.duration);
+            
+            console.log('User said:', text);
+        }
+
+        async handleAudioResponse(message) {
+            try {
+                // Add AI response to history
+                const timestamp = new Date().toLocaleTimeString();
+                const duration = message.duration_ms ? (message.duration_ms / 1000).toFixed(1) + 's' : null;
+                this.addMessageToHistory('ai', message.response_text, timestamp, duration);
+
+                // Play the audio response
+                if (message.audio_data) {
+                    await this.playAudioResponse(message.audio_data);
+                }
+
+                this.updateConversationState('listening', 'Listening for your response...');
+                
+            } catch (error) {
+                console.error('Error handling audio response:', error);
+                showNotification('Error playing AI response', 'error');
+            }
+        }
+
+        async playAudioResponse(base64Audio) {
+            try {
+                // Decode base64 audio data
+                const audioData = atob(base64Audio);
+                const audioBuffer = new ArrayBuffer(audioData.length);
+                const view = new Uint8Array(audioBuffer);
+                
+                for (let i = 0; i < audioData.length; i++) {
+                    view[i] = audioData.charCodeAt(i);
+                }
+                
+                // Create and play audio
+                const audioBlob = new Blob([audioBuffer], { type: 'audio/wav' });
+                const audioUrl = URL.createObjectURL(audioBlob);
+                const audio = new Audio(audioUrl);
+                
+                audio.onended = () => {
+                    URL.revokeObjectURL(audioUrl);
+                };
+                
+                await audio.play();
+                
+            } catch (error) {
+                console.error('Error playing audio response:', error);
+                throw error;
+            }
+        }
+
+        addMessageToHistory(sender, text, timestamp, duration = null) {
+            this.conversationHistory.push({
+                sender,
+                text,
+                timestamp,
+                duration
+            });
+
+            this.updateConversationHistoryDisplay();
+            this.updateConversationStats();
+        }
+
+        updateConversationHistoryDisplay() {
+            if (!conversationMessages || !conversationHistoryPlaceholder) return;
+
+            if (this.conversationHistory.length === 0) {
+                conversationHistoryPlaceholder.classList.remove('hidden');
+                conversationMessages.classList.add('hidden');
+                return;
+            }
+
+            conversationHistoryPlaceholder.classList.add('hidden');
+            conversationMessages.classList.remove('hidden');
+
+            // Clear and rebuild messages
+            conversationMessages.innerHTML = '';
+
+            this.conversationHistory.forEach(message => {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = `conversation-message conversation-message-${message.sender}`;
+
+                const timestampDiv = document.createElement('div');
+                timestampDiv.className = 'conversation-message-timestamp';
+                timestampDiv.textContent = `${message.sender === 'user' ? 'You' : 'AI'} • ${message.timestamp}`;
+
+                const textDiv = document.createElement('div');
+                textDiv.className = 'conversation-message-text';
+                textDiv.textContent = message.text;
+
+                messageDiv.appendChild(timestampDiv);
+                messageDiv.appendChild(textDiv);
+
+                if (message.duration) {
+                    const durationDiv = document.createElement('div');
+                    durationDiv.className = 'conversation-message-duration';
+                    durationDiv.textContent = `Duration: ${message.duration}`;
+                    messageDiv.appendChild(durationDiv);
+                }
+
+                conversationMessages.appendChild(messageDiv);
+            });
+
+            // Scroll to bottom
+            conversationHistoryDisplay.scrollTop = conversationHistoryDisplay.scrollHeight;
+        }
+
+        updateConversationStats() {
+            if (conversationStats) {
+                conversationStats.textContent = `${this.conversationHistory.length} exchanges`;
+            }
+
+            if (conversationDuration && this.startTime) {
+                const elapsed = Math.floor((Date.now() - this.startTime) / 1000);
+                conversationDuration.textContent = `Duration: ${formatTime(elapsed)}`;
+            }
+        }
+
+        updateConversationState(state, details) {
+            this.conversationState = state;
+
+            if (conversationStateBadge) {
+                // Remove all state classes
+                conversationStateBadge.className = conversationStateBadge.className.replace(/conversation-state-\w+/g, '');
+                conversationStateBadge.classList.add(`conversation-state-${state}`);
+                conversationStateBadge.textContent = state.charAt(0).toUpperCase() + state.slice(1);
+            }
+
+            if (conversationDetails) {
+                conversationDetails.textContent = details || '';
+            }
+        }
+
+        updateWebSocketStatus(status) {
+            if (websocketStatus) {
+                websocketStatus.textContent = status;
+                websocketStatus.className = 'text-sm px-2 py-1 rounded ' + 
+                    (status === 'Connected' ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' :
+                     'text-slate-500 dark:text-slate-400');
+            }
+        }
+
+        async startRecording() {
+            try {
+                if (!this.connected) {
+                    await this.connect();
+                }
+
+                // Get microphone access
+                this.mediaStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        sampleRate: 16000,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    }
+                });
+
+                // Set up audio context for PCM processing
+                this.audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+                const source = this.audioContext.createMediaStreamSource(this.mediaStream);
+
+                // Create PCM processor (simplified version)
+                this.pcmProcessor = this.audioContext.createScriptProcessor(1024, 1, 1);
+                this.pcmProcessor.onaudioprocess = (event) => {
+                    const inputData = event.inputBuffer.getChannelData(0);
+                    
+                    // Convert float32 to int16 PCM
+                    const pcmData = new Int16Array(inputData.length);
+                    for (let i = 0; i < inputData.length; i++) {
+                        pcmData[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32768));
+                    }
+                    
+                    // Send PCM data via WebSocket
+                    if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                        this.websocket.send(pcmData.buffer);
+                    }
+                };
+
+                source.connect(this.pcmProcessor);
+                this.pcmProcessor.connect(this.audioContext.destination);
+
+                this.startTime = Date.now();
+                this.updateConversationState('listening', 'Listening for speech...');
+                
+                console.log('Audio conversation recording started');
+
+            } catch (error) {
+                console.error('Error starting audio conversation recording:', error);
+                this.updateConversationState('error', `Failed to start recording: ${error.message}`);
+                throw error;
+            }
+        }
+
+        stopRecording() {
+            try {
+                if (this.pcmProcessor) {
+                    this.pcmProcessor.disconnect();
+                    this.pcmProcessor = null;
+                }
+
+                if (this.audioContext) {
+                    this.audioContext.close();
+                    this.audioContext = null;
+                }
+
+                if (this.mediaStream) {
+                    this.mediaStream.getTracks().forEach(track => track.stop());
+                    this.mediaStream = null;
+                }
+
+                this.updateConversationState('ready', 'Recording stopped.');
+                console.log('Audio conversation recording stopped');
+
+            } catch (error) {
+                console.error('Error stopping audio conversation recording:', error);
+            }
+        }
+
+        disconnect() {
+            this.stopRecording();
+
+            if (this.websocket) {
+                this.websocket.close(1000, 'User disconnected');
+                this.websocket = null;
+            }
+
+            this.connected = false;
+            this.updateWebSocketStatus('Disconnected');
+            this.updateConversationState('ready', 'Disconnected.');
+        }
+
+        resetConversation() {
+            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                this.websocket.send(JSON.stringify({ action: 'reset' }));
+            }
+        }
+
+        resetConversationHistory() {
+            this.conversationHistory = [];
+            this.startTime = Date.now();
+            this.updateConversationHistoryDisplay();
+            this.updateConversationStats();
+        }
+
+        changeResponseMode(mode) {
+            this.responseMode = mode;
+            if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                this.websocket.send(JSON.stringify({ 
+                    action: 'change_response_mode',
+                    mode: mode 
+                }));
+            }
+        }
+
+        scheduleReconnect() {
+            this.reconnectAttempts++;
+            const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
+            
+            console.log(`Scheduling reconnect attempt ${this.reconnectAttempts} in ${delay}ms`);
+            this.updateConversationState('error', `Reconnecting... (attempt ${this.reconnectAttempts})`);
+            
+            setTimeout(() => {
+                if (this.reconnectAttempts <= this.maxReconnectAttempts) {
+                    this.connect().catch(console.error);
+                }
+            }, delay);
         }
     }
 
@@ -1253,7 +1705,7 @@ document.addEventListener('DOMContentLoaded', async function() {
         updateAudioLevel();
     }
 
-    // Start conversation (handles both record and real-time modes)
+    // Start conversation (handles record, real-time, and audio conversation modes)
     async function startConversation() {
         try {
             // Clear previous conversation output
@@ -1269,20 +1721,38 @@ document.addEventListener('DOMContentLoaded', async function() {
                 throw new Error('Microphone access requires HTTPS or localhost. Please access via https:// or http://localhost:8004');
             }
 
-            const stream = await navigator.mediaDevices.getUserMedia({
-                audio: {
-                    channelCount: 1,
-                    sampleRate: 16000,
-                    echoCancellation: true,
-                    noiseSuppression: true
-                }
-            });
-
             // Handle different modes
-            if (conversationMode === 'realtime') {
-                await startRealtimeTranscription(stream);
+            if (conversationMode === 'conversation') {
+                // Audio conversation mode using AudioConversationManager
+                if (!audioConversationManager) {
+                    audioConversationManager = new AudioConversationManager();
+                }
+                
+                // Update response mode and sensitivity from UI
+                const selectedResponseMode = document.querySelector('input[name="response_mode"]:checked')?.value || 'echo';
+                const pauseSensitivity = pauseSensitivitySlider?.value || 2;
+                
+                audioConversationManager.responseMode = selectedResponseMode;
+                audioConversationManager.pauseSensitivity = parseInt(pauseSensitivity);
+                
+                await audioConversationManager.startRecording();
+                
             } else {
-                await startRecordAndProcess(stream);
+                // Traditional modes - get microphone stream
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        channelCount: 1,
+                        sampleRate: 16000,
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    }
+                });
+
+                if (conversationMode === 'realtime') {
+                    await startRealtimeTranscription(stream);
+                } else {
+                    await startRecordAndProcess(stream);
+                }
             }
 
         } catch (error) {
@@ -1442,8 +1912,21 @@ document.addEventListener('DOMContentLoaded', async function() {
         if (audioLevelContainer) audioLevelContainer.classList.remove('hidden');
     }
 
-    // Stop recording conversation (handles both record and realtime modes)
+    // Stop recording conversation (handles record, realtime, and audio conversation modes)
     function stopConversation() {
+        // Handle audio conversation mode separately
+        if (conversationMode === 'conversation' && audioConversationManager) {
+            audioConversationManager.stopRecording();
+            
+            if (startConversationBtn) startConversationBtn.disabled = false;
+            if (stopConversationBtn) stopConversationBtn.disabled = true;
+            if (audioLevelContainer) audioLevelContainer.classList.add('hidden');
+            if (conversationStatus) conversationStatus.textContent = 'Audio conversation stopped.';
+            
+            return;
+        }
+        
+        // Handle traditional record and realtime modes
         if (isRecording) {
             isRecording = false;
             
@@ -2167,31 +2650,56 @@ document.addEventListener('DOMContentLoaded', async function() {
         if (isRecording) {
             stopConversation();
         }
+        
+        // Disconnect audio conversation if switching away
+        if (audioConversationManager && conversationMode === 'conversation') {
+            audioConversationManager.disconnect();
+        }
 
         conversationMode = mode;
+        
+        // Hide all mode-specific elements first
+        [realtimeModeDesc, recordModeDesc, conversationModeDesc].forEach(elem => {
+            if (elem) elem.classList.add('hidden');
+        });
+        
+        [websocketStatusContainer, liveTranscriptionContainer, audioConversationSettings, 
+         audioConversationHistory, clearTranscriptionBtn].forEach(elem => {
+            if (elem) elem.classList.add('hidden');
+        });
 
         // Update UI based on mode
         if (mode === 'realtime') {
-            // Show real-time specific elements
+            // Show real-time transcription elements
             if (websocketStatusContainer) websocketStatusContainer.classList.remove('hidden');
             if (liveTranscriptionContainer) liveTranscriptionContainer.classList.remove('hidden');
             if (clearTranscriptionBtn) clearTranscriptionBtn.classList.remove('hidden');
             if (realtimeModeDesc) realtimeModeDesc.classList.remove('hidden');
-            if (recordModeDesc) recordModeDesc.classList.add('hidden');
             if (startBtnText) startBtnText.textContent = 'Start Real-time';
-
-            // Connect WebSocket
+            
+            // Connect WebSocket for real-time transcription
             connectWebSocket();
+            
+        } else if (mode === 'conversation') {
+            // Show audio conversation elements
+            if (websocketStatusContainer) websocketStatusContainer.classList.remove('hidden');
+            if (audioConversationSettings) audioConversationSettings.classList.remove('hidden');
+            if (audioConversationHistory) audioConversationHistory.classList.remove('hidden');
+            if (conversationModeDesc) conversationModeDesc.classList.remove('hidden');
+            if (resetConversationBtn) resetConversationBtn.classList.remove('hidden');
+            if (startBtnText) startBtnText.textContent = 'Start Conversation';
+            
+            // Initialize audio conversation manager
+            if (!audioConversationManager) {
+                audioConversationManager = new AudioConversationManager();
+            }
+            
         } else {
-            // Hide real-time specific elements  
-            if (websocketStatusContainer) websocketStatusContainer.classList.add('hidden');
-            if (liveTranscriptionContainer) liveTranscriptionContainer.classList.add('hidden');
-            if (clearTranscriptionBtn) clearTranscriptionBtn.classList.add('hidden');
-            if (realtimeModeDesc) realtimeModeDesc.classList.add('hidden');
+            // Record mode (default)
             if (recordModeDesc) recordModeDesc.classList.remove('hidden');
             if (startBtnText) startBtnText.textContent = 'Start Speaking';
-
-            // Disconnect WebSocket
+            
+            // Disconnect WebSocket for real-time transcription
             disconnectWebSocket();
         }
     }
@@ -2272,6 +2780,81 @@ document.addEventListener('DOMContentLoaded', async function() {
                 showNotification(`Failed to generate speech: ${error.message}`, 'error');
             } finally {
                 hideLoadingOverlay();
+            }
+        });
+    }
+
+    // Audio Conversation Event Listeners
+    
+    // Response mode selection
+    responseModeRadios.forEach(radio => {
+        radio.addEventListener('change', function() {
+            currentResponseMode = this.value;
+            
+            // Update description visibility
+            if (echoModeDesc && templateModeDesc) {
+                echoModeDesc.classList.toggle('hidden', this.value !== 'echo');
+                templateModeDesc.classList.toggle('hidden', this.value !== 'template');
+            }
+            
+            // Update the audio conversation manager if active
+            if (audioConversationManager && this.value !== audioConversationManager.responseMode) {
+                audioConversationManager.changeResponseMode(this.value);
+            }
+            
+            // Handle visual selection state
+            document.querySelectorAll('.response-mode-option').forEach(option => {
+                option.classList.remove('selected');
+            });
+            
+            const selectedOption = this.closest('.response-mode-option');
+            if (selectedOption) {
+                selectedOption.classList.add('selected');
+            }
+        });
+    });
+
+    // Set initial response mode state
+    const checkedResponseModeRadio = document.querySelector('input[name="response_mode"]:checked');
+    if (checkedResponseModeRadio) {
+        const selectedOption = checkedResponseModeRadio.closest('.response-mode-option');
+        if (selectedOption) {
+            selectedOption.classList.add('selected');
+        }
+        currentResponseMode = checkedResponseModeRadio.value;
+    }
+
+    // Reset conversation button
+    if (resetConversationBtn) {
+        resetConversationBtn.addEventListener('click', () => {
+            if (audioConversationManager) {
+                if (confirm('Are you sure you want to reset the conversation? This will clear all conversation history.')) {
+                    audioConversationManager.resetConversation();
+                }
+            }
+        });
+    }
+
+    // Clear conversation history button
+    if (clearConversationHistoryBtn) {
+        clearConversationHistoryBtn.addEventListener('click', () => {
+            if (audioConversationManager) {
+                if (confirm('Are you sure you want to clear the conversation history? This action cannot be undone.')) {
+                    audioConversationManager.resetConversationHistory();
+                    showNotification('Conversation history cleared', 'success');
+                }
+            }
+        });
+    }
+
+    // Pause sensitivity slider
+    if (pauseSensitivitySlider) {
+        pauseSensitivitySlider.addEventListener('input', function() {
+            const value = parseInt(this.value);
+            if (audioConversationManager && audioConversationManager.pauseSensitivity !== value) {
+                audioConversationManager.pauseSensitivity = value;
+                // Note: Real-time sensitivity changes would require WebSocket message support
+                console.log('Pause sensitivity changed to:', value);
             }
         });
     }

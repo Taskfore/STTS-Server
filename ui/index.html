@@ -67,7 +67,7 @@
                         <!-- Conversation Mode Selector -->
                         <div class="mb-6">
                             <label class="label-base mb-2">Conversation Mode:</label>
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                                 <label class="conversation-mode-option" data-mode="record">
                                     <input type="radio" name="conversation_mode" value="record" class="hidden peer" checked>
                                     <span>Record & Process</span>
@@ -76,10 +76,15 @@
                                     <input type="radio" name="conversation_mode" value="realtime" class="hidden peer">
                                     <span>Real-time Transcription</span>
                                 </label>
+                                <label class="conversation-mode-option" data-mode="conversation">
+                                    <input type="radio" name="conversation_mode" value="conversation" class="hidden peer">
+                                    <span>Audio Conversation</span>
+                                </label>
                             </div>
                             <p class="text-xs text-slate-500 dark:text-slate-400 mt-2">
                                 <span class="record-mode-desc">Record complete speech, then process for AI response.</span>
                                 <span class="realtime-mode-desc hidden">Live transcription with WebSocket streaming (no AI response yet).</span>
+                                <span class="conversation-mode-desc hidden">Real-time bidirectional voice conversation with AI responses.</span>
                             </p>
                         </div>
 
@@ -90,6 +95,70 @@
                                 <span id="websocket-status" class="text-sm px-2 py-1 rounded text-slate-500 dark:text-slate-400">
                                     Disconnected
                                 </span>
+                            </div>
+                        </div>
+
+                        <!-- Audio Conversation Settings (Audio Conversation mode only) -->
+                        <div id="audio-conversation-settings" class="mb-6 hidden">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <!-- Response Mode Selection -->
+                                <div>
+                                    <label class="label-base mb-2">AI Response Mode:</label>
+                                    <div class="space-y-2">
+                                        <label class="response-mode-option" data-mode="echo">
+                                            <input type="radio" name="response_mode" value="echo" class="hidden peer" checked>
+                                            <span>Echo Mode</span>
+                                        </label>
+                                        <label class="response-mode-option" data-mode="template">
+                                            <input type="radio" name="response_mode" value="template" class="hidden peer">
+                                            <span>Template Mode</span>
+                                        </label>
+                                    </div>
+                                    <p class="text-xs text-slate-500 dark:text-slate-400 mt-2">
+                                        <span class="echo-mode-desc">Simple repetition with variations.</span>
+                                        <span class="template-mode-desc hidden">Intelligent keyword-based responses.</span>
+                                    </p>
+                                </div>
+
+                                <!-- Pause Detection Settings -->
+                                <div>
+                                    <label for="pause-sensitivity" class="label-base">Pause Detection Sensitivity:</label>
+                                    <div class="flex items-center gap-3 mt-2">
+                                        <span class="text-xs text-slate-500 dark:text-slate-400">Less Sensitive</span>
+                                        <input type="range" id="pause-sensitivity" name="pause_sensitivity" min="0" max="3" step="1" value="2" class="slider-base flex-grow">
+                                        <span class="text-xs text-slate-500 dark:text-slate-400">More Sensitive</span>
+                                    </div>
+                                    <div class="flex justify-between text-xs text-slate-500 dark:text-slate-400 mt-1">
+                                        <span>0</span>
+                                        <span>1</span>
+                                        <span>2</span>
+                                        <span>3</span>
+                                    </div>
+                                    <p class="text-xs text-slate-500 dark:text-slate-400 mt-2">
+                                        Higher values detect speech pauses more aggressively. Recommended: 2 for normal conversation.
+                                    </p>
+                                </div>
+                            </div>
+
+                            <!-- Conversation State Display -->
+                            <div class="mt-4 p-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg">
+                                <div class="flex items-center justify-between">
+                                    <div class="flex items-center gap-3">
+                                        <span class="text-sm label-base">Conversation State:</span>
+                                        <span id="conversation-state-badge" class="text-xs px-2 py-1 rounded bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-400">
+                                            Ready
+                                        </span>
+                                    </div>
+                                    <button type="button" id="reset-conversation-btn" class="btn-secondary text-sm hidden">
+                                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4 mr-1 inline-block">
+                                            <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+                                        </svg>
+                                        Reset
+                                    </button>
+                                </div>
+                                <div id="conversation-details" class="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                                    Click "Start Speaking" to begin the conversation.
+                                </div>
                             </div>
                         </div>
                         
@@ -141,6 +210,29 @@
                                     Generate Speech
                                 </button>
                                 <span class="text-xs text-slate-500 dark:text-slate-400" id="transcription-word-count">0 words</span>
+                            </div>
+                        </div>
+
+                        <!-- Audio Conversation History (Audio Conversation mode only) -->
+                        <div id="audio-conversation-history" class="mb-6 hidden">
+                            <div class="flex items-center justify-between mb-2">
+                                <label class="label-base">Conversation History</label>
+                                <button type="button" id="clear-conversation-history-btn" class="btn-secondary text-sm">
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4 mr-1 inline-block">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9.75L14.25 12m0 0l2.25 2.25M14.25 12l2.25-2.25M14.25 12L12 14.25m-2.58 4.92l-6.375-6.375a1.125 1.125 0 010-1.59L9.42 4.83c.211-.211.498-.33.796-.33H19.5a2.25 2.25 0 012.25 2.25v10.5a2.25 2.25 0 01-2.25 2.25h-9.284c-.298 0-.585-.119-.796-.33z" />
+                                    </svg>
+                                    Clear
+                                </button>
+                            </div>
+                            <div id="conversation-history-display" class="p-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg min-h-[150px] max-h-[400px] overflow-y-auto">
+                                <p class="text-slate-500 dark:text-slate-400 italic text-sm text-center" id="conversation-history-placeholder">
+                                    Your conversation will appear here...
+                                </p>
+                                <div id="conversation-messages" class="space-y-3 hidden"></div>
+                            </div>
+                            <div class="flex items-center justify-between mt-2 text-xs text-slate-500 dark:text-slate-400">
+                                <span id="conversation-stats">0 exchanges</span>
+                                <span id="conversation-duration">Duration: 00:00</span>
                             </div>
                         </div>
 

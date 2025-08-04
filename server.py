@@ -73,7 +73,7 @@ import utils  # Utility functions
 from pydantic import BaseModel, Field
 
 # Import routers
-from routers import stt, conversation, websocket_stt
+from routers import stt, conversation, websocket_stt, websocket_conversation
 from routers.stt import get_stt_engine
 
 
@@ -223,6 +223,7 @@ app.add_middleware(
 app.include_router(stt.router)
 app.include_router(conversation.router)
 app.include_router(websocket_stt.router)
+app.include_router(websocket_conversation.router)
 
 # --- Static Files and HTML Templates ---
 ui_static_path = Path(__file__).parent / "ui"

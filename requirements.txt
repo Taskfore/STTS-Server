@@ -21,6 +21,8 @@ chatterbox-tts==0.1.2
 # --- Speech-to-Text (STT) Application ---
 # OpenAI Whisper for speech transcription
 openai-whisper
+# WebRTC Voice Activity Detection for pause detection
+webrtcvad
 
 # --- Web Framework & Server ---
 fastapi                         # Modern async web framework
