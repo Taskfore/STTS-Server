@@ -86,9 +86,19 @@ class PauseDetector:
         if len(pcm_data) == 0:
             return self._get_current_state()
         
+        # Log basic info about the chunk (every 100 calls to avoid spam)
+        if not hasattr(self, '_chunk_count'):
+            self._chunk_count = 0
+        self._chunk_count += 1
+        
+        if self._chunk_count % 100 == 0:
+            logger.info(f"PauseDetector processing chunk #{self._chunk_count}: {len(pcm_data)} bytes")
+        
         # Convert PCM bytes to numpy array for frame extraction
         try:
             audio_np = np.frombuffer(pcm_data, dtype=np.int16)
+            if self._chunk_count % 100 == 0:
+                logger.info(f"Converted PCM to numpy: {len(audio_np)} samples, dtype={audio_np.dtype}, range=[{audio_np.min()}, {audio_np.max()}]")
         except Exception as e:
             logger.error(f"Error converting PCM data: {e}")
             return self._get_current_state()
@@ -124,8 +134,18 @@ class PauseDetector:
         try:
             # Use WebRTC VAD to detect speech in this frame
             is_speech = self.vad.is_speech(frame_bytes, self.sample_rate)
+            
+            # Log VAD results periodically
+            if hasattr(self, '_frame_count'):
+                self._frame_count += 1
+            else:
+                self._frame_count = 1
+                
+            if self._frame_count % 50 == 0:
+                logger.info(f"WebRTC VAD frame #{self._frame_count}: speech={is_speech}, frame_size={len(frame_bytes)} bytes, sample_rate={self.sample_rate}")
+                
         except Exception as e:
-            logger.warning(f"WebRTC VAD error: {e}")
+            logger.warning(f"WebRTC VAD error on frame #{getattr(self, '_frame_count', 0)}: {e}")
             is_speech = False
         
         # Update counters
@@ -137,6 +157,10 @@ class PauseDetector:
             self.silence_frames += 1
             self.speech_frames = 0
         
+        # Log counter updates periodically
+        if self._frame_count % 50 == 0:
+            logger.info(f"VAD counters: speech_frames={self.speech_frames}, silence_frames={self.silence_frames}, is_speaking={self.is_speaking}, min_speech={self.min_speech_frames}, min_pause={self.min_pause_frames}")
+        
         # Check for state transitions
         prev_speaking = self.is_speaking
         
@@ -145,14 +169,14 @@ class PauseDetector:
             self.is_speaking = True
             self.speech_start_time = current_time
             events.append('speech_start')
-            logger.debug("Speech started")
+            logger.info(f"SPEECH START detected: speech_frames={self.speech_frames} >= min_speech_frames={self.min_speech_frames}")
         
         # Speech end detection (pause)
         elif self.is_speaking and self.silence_frames >= self.min_pause_frames:
             self.is_speaking = False
             speech_duration = current_time - self.speech_start_time if self.speech_start_time else 0
             events.append('speech_end')
-            logger.debug(f"Speech ended, duration: {speech_duration:.2f}s")
+            logger.info(f"SPEECH END detected: silence_frames={self.silence_frames} >= min_pause_frames={self.min_pause_frames}, speech_duration={speech_duration:.2f}s")
         
         return events
     

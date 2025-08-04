@@ -164,7 +164,6 @@ class ConversationProcessor:
             return None
         
         self.audio_buffer.add_audio(audio_np)
-        logger.info(f"Added {len(audio_np)} audio samples to buffer, total buffer size: {len(self.audio_buffer.get_recent_audio(duration_seconds=10.0))} samples")
         
         # Process pause detection
         pause_result = self.pause_detector.process_pcm_chunk(audio_data)
@@ -537,6 +536,9 @@ async def websocket_conversation(
                     if result:
                         logger.info(f"Sending conversation state update: {result.get('events', [])}")
                         await websocket.send_json(result)
+                    elif audio_chunk_count % 100 == 0:
+                        # Log pause detection status even when no events
+                        logger.info(f"No conversation events at chunk #{audio_chunk_count}, conversation state: {conversation.conversation_state}")
                 
                 elif "text" in data:
                     # Handle text commands
