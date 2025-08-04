@@ -51,6 +51,7 @@ class ConversationProcessor:
     
     def __init__(self, 
                  stt_engine: STTEngine,
+                 websocket: WebSocket,
                  language: Optional[str] = None,
                  voice_mode: str = "predefined",
                  predefined_voice_id: Optional[str] = None,
@@ -62,6 +63,7 @@ class ConversationProcessor:
         
         Args:
             stt_engine: Speech-to-text engine
+            websocket: WebSocket connection for sending responses
             language: STT language (None for auto-detect)
             voice_mode: TTS voice mode ("predefined" or "clone")
             predefined_voice_id: Predefined voice ID for TTS
@@ -70,6 +72,7 @@ class ConversationProcessor:
             pause_aggressiveness: WebRTC VAD aggressiveness (0-3)
         """
         self.stt_engine = stt_engine
+        self.websocket = websocket
         self.language = language
         self.voice_mode = voice_mode
         self.predefined_voice_id = predefined_voice_id or get_default_voice_id()
@@ -227,19 +230,48 @@ class ConversationProcessor:
             response_text = self.response_generator.generate_response(transcribed_text)
             logger.info(f"Response: '{response_text}'")
             
+            # Extract timing from segments
+            start_time = transcription_result.segments[0].start if transcription_result.segments else 0.0
+            end_time = transcription_result.segments[-1].end if transcription_result.segments else 0.0
+            duration = end_time - start_time
+            
+            # Send transcription to client
+            await self.websocket.send_json({
+                "type": "transcription",
+                "text": transcribed_text,
+                "language": transcription_result.language if transcription_result.language else "unknown",
+                "partial": False,
+                "timing": {
+                    "start": start_time,
+                    "end": end_time,
+                    "duration": duration
+                },
+                "segments": [
+                    {
+                        "text": seg.text,
+                        "start": seg.start,
+                        "end": seg.end
+                    } for seg in transcription_result.segments
+                ]
+            })
+            
             # Step 3: Convert response to speech
             logger.debug("Converting response to speech...")
             audio_response = await self._text_to_speech(response_text)
             
             if audio_response:
-                return {
-                    'transcription': transcribed_text,
-                    'response_text': response_text,
-                    'audio_response': audio_response
-                }
+                # Send audio response to client
+                await self.websocket.send_json({
+                    "type": "response_audio",
+                    "audio_data": audio_response['audio_data'],
+                    "format": audio_response['format'],
+                    "sample_rate": audio_response['sample_rate'],
+                    "duration_ms": audio_response['duration_ms'],
+                    "response_text": response_text
+                })
+                logger.info("Audio response sent to client")
             else:
                 logger.warning("Failed to generate audio response")
-                return None
                 
         except Exception as e:
             logger.error(f"Error in speech-to-response processing: {e}", exc_info=True)
@@ -392,6 +424,7 @@ async def websocket_conversation(
     try:
         conversation = ConversationProcessor(
             stt_engine=stt_engine,
+            websocket=websocket,
             language=language,
             voice_mode=voice_mode,
             predefined_voice_id=predefined_voice_id,
@@ -407,27 +440,6 @@ async def websocket_conversation(
         await websocket.close()
         return
     
-    # Create a queue for response messages
-    response_queue = asyncio.Queue()
-    
-    # Background task to handle speech-to-response processing
-    async def response_handler():
-        """Handle responses from speech processing"""
-        while True:
-            try:
-                # Wait for response from conversation processor
-                # This is a simplified approach - in practice you'd use proper async communication
-                await asyncio.sleep(0.1)  # Check periodically
-                
-                # Check if conversation processor has responses ready
-                # (This would be implemented with proper async messaging in production)
-                
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Response handler error: {e}")
-    
-    response_task = asyncio.create_task(response_handler())
     
     try:
         await websocket.send_json({
@@ -508,7 +520,6 @@ async def websocket_conversation(
         except:
             pass
     finally:
-        response_task.cancel()
         logger.info("WebSocket conversation session ended")
 
 
