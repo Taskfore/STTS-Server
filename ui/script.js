@@ -683,19 +683,23 @@ document.addEventListener('DOMContentLoaded', async function() {
                     }
                 });
 
-                // Set up audio context for PCM processing
-                this.audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+                // Set up audio context for PCM processing (don't force sample rate)
+                this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 const source = this.audioContext.createMediaStreamSource(this.mediaStream);
 
                 // Create PCM processor (simplified version)
                 this.pcmProcessor = this.audioContext.createScriptProcessor(1024, 1, 1);
                 this.pcmProcessor.onaudioprocess = (event) => {
-                    const inputData = event.inputBuffer.getChannelData(0);
+                    const inputBuffer = event.inputBuffer;
+                    const inputData = inputBuffer.getChannelData(0);
+                    
+                    // Resample to 16kHz if needed (most browsers use 44.1kHz or 48kHz)
+                    const resampledData = resampleToTargetRate(inputData, inputBuffer.sampleRate, 16000);
                     
                     // Convert float32 to int16 PCM
-                    const pcmData = new Int16Array(inputData.length);
-                    for (let i = 0; i < inputData.length; i++) {
-                        pcmData[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32768));
+                    const pcmData = new Int16Array(resampledData.length);
+                    for (let i = 0; i < resampledData.length; i++) {
+                        pcmData[i] = Math.max(-32768, Math.min(32767, resampledData[i] * 32768));
                     }
                     
                     // Send PCM data via WebSocket
@@ -1667,7 +1671,7 @@ document.addEventListener('DOMContentLoaded', async function() {
             }
         }
         
-        // Create fresh AudioContext
+        // Create fresh AudioContext (use default sample rate to match stream)
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
         analyser = audioContext.createAnalyser();
         microphone = audioContext.createMediaStreamSource(stream);
@@ -1723,6 +1727,16 @@ document.addEventListener('DOMContentLoaded', async function() {
 
             // Handle different modes
             if (conversationMode === 'conversation') {
+                // Clean up any existing global audio context to prevent sample rate conflicts
+                if (audioContext && audioContext.state !== 'closed') {
+                    try {
+                        audioContext.close();
+                        audioContext = null;
+                    } catch (e) {
+                        console.warn('Error closing existing global AudioContext:', e);
+                    }
+                }
+                
                 // Audio conversation mode using AudioConversationManager
                 if (!audioConversationManager) {
                     audioConversationManager = new AudioConversationManager();
