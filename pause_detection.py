@@ -105,13 +105,22 @@ class PauseDetector:
         
         # Extract frames and process each one
         events = []
+        total_frames = 0
+        processed_frames = 0
+        
         for i in range(0, len(audio_np), self.frame_size):
             frame_data = audio_np[i:i + self.frame_size]
+            total_frames += 1
             
             # Only process complete frames
             if len(frame_data) == self.frame_size:
+                processed_frames += 1
                 frame_events = self._process_frame(frame_data.tobytes())
                 events.extend(frame_events)
+        
+        # Log frame processing info
+        if self._chunk_count % 1000 == 0:
+            logger.info(f"Frame processing: {processed_frames}/{total_frames} complete frames processed, frame_size={self.frame_size} samples ({self.frame_size*2} bytes)")
         
         # Return consolidated state with all events from this chunk
         state = self._get_current_state()

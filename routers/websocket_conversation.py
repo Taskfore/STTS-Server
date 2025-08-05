@@ -87,8 +87,8 @@ class ConversationProcessor:
             if WEBRTC_AVAILABLE:
                 self.pause_detector = PauseDetector(
                     aggressiveness=pause_aggressiveness,
-                    min_speech_frames=8,   # ~240ms
-                    min_pause_frames=20,   # ~600ms
+                    min_speech_frames=3,   # ~90ms - much more sensitive
+                    min_pause_frames=10,   # ~300ms - shorter pauses
                 )
                 logger.info("Using WebRTC VAD for pause detection")
             else:

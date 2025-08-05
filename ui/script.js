@@ -687,8 +687,9 @@ document.addEventListener('DOMContentLoaded', async function() {
                 this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 const source = this.audioContext.createMediaStreamSource(this.mediaStream);
 
-                // Create PCM processor (simplified version)
-                this.pcmProcessor = this.audioContext.createScriptProcessor(1024, 1, 1);
+                // Create PCM processor with valid buffer size (must be power of 2)
+                // Using 2048 samples (closest valid size to 1920)
+                this.pcmProcessor = this.audioContext.createScriptProcessor(2048, 1, 1);
                 this.pcmProcessor.onaudioprocess = (event) => {
                     const inputBuffer = event.inputBuffer;
                     const inputData = inputBuffer.getChannelData(0);
