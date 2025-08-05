@@ -1,11 +1,8 @@
-# Caddyfile for Chatterbox TTS Server with self-signed HTTPS
-# This configuration provides HTTPS access via IP address using self-signed certificates
+# Caddyfile for Chatterbox TTS Server with automatic HTTPS
+# This configuration provides HTTPS access via domain name with automatic Let's Encrypt certificates
 
-# Listen on all interfaces for HTTPS traffic
-:443 {
-    # Enable self-signed certificates for IP access
-    tls /etc/caddy/server.crt /etc/caddy/server.key
-    
+# Domain-based configuration with automatic HTTPS
+stts.careerlink.ai {
     # Reverse proxy to the TTS server container (handles both HTTP and WebSocket)
     reverse_proxy chatterbox-tts-server:8004
     
@@ -24,17 +21,5 @@
         X-XSS-Protection "1; mode=block"
         # Prevent clickjacking
         X-Frame-Options DENY
-    }
-}
-
-# Optional: Redirect HTTP to HTTPS
-:80 {
-    # Redirect all HTTP traffic to HTTPS
-    redir https://{host}{uri} permanent
-    
-    log {
-        output stdout
-        format console
-        level DEBUG
     }
 }

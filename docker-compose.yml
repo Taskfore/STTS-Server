@@ -11,8 +11,6 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile
-      - ./server.crt:/etc/caddy/server.crt
-      - ./server.key:/etc/caddy/server.key
       - caddy_data:/data
       - caddy_config:/config
     networks:

@@ -43,7 +43,7 @@ python tests/test_websocket_stt.py
 ### Docker Deployment
 
 #### HTTPS Deployment (Recommended)
-All Docker configurations now include Caddy reverse proxy for automatic HTTPS with self-signed certificates:
+All Docker configurations now include Caddy reverse proxy for automatic HTTPS with Let's Encrypt certificates:
 
 ```bash
 # NVIDIA GPU with HTTPS
@@ -57,15 +57,15 @@ docker compose -f docker-compose-cpu.yml up -d --build
 ```
 
 **Access URLs:**
-- **HTTPS**: `https://YOUR_SERVER_IP` (self-signed certificate, accept browser warning)
-- **HTTP**: `http://YOUR_SERVER_IP` (automatically redirects to HTTPS)
-- **API Documentation**: `https://YOUR_SERVER_IP/docs`
+- **HTTPS**: `https://stts.careerlink.ai` (automatic Let's Encrypt certificate)
+- **HTTP**: `http://stts.careerlink.ai` (automatically redirects to HTTPS)
+- **API Documentation**: `https://stts.careerlink.ai/docs`
 
 **Certificate Notes:**
-- Self-signed certificates will show browser security warnings
-- Click "Advanced" → "Proceed to [IP address]" to accept
-- Certificates are automatically generated and stored in Docker volumes
-- For production, consider using a domain name with Let's Encrypt certificates
+- Let's Encrypt certificates are automatically obtained and renewed
+- No browser security warnings - trusted certificates
+- Certificates are automatically managed by Caddy
+- Domain must point to your server IP for certificate validation
 
 ### Testing
 
@@ -85,9 +85,9 @@ python tests/test_websocket_stt.py
 
 #### Docker/HTTPS Testing
 When using Docker with HTTPS, test via:
-- **Web UI**: `https://YOUR_SERVER_IP`
-- **API Documentation**: `https://YOUR_SERVER_IP/docs` (Swagger UI)
-- **WebSocket STT**: `wss://YOUR_SERVER_IP/ws/transcribe`
+- **Web UI**: `https://stts.careerlink.ai`
+- **API Documentation**: `https://stts.careerlink.ai/docs` (Swagger UI)
+- **WebSocket STT**: `wss://stts.careerlink.ai/ws/transcribe`
 - **Direct API calls** to HTTPS endpoints
 
 ## High-Level Architecture
