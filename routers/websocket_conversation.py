@@ -571,6 +571,14 @@ async def websocket_conversation(
                                 "message": "WebSocket conversation active"
                             })
                         
+                        elif command.get("action") == "stop":
+                            logger.info("Received stop command - ending conversation")
+                            await websocket.send_json({
+                                "type": "conversation_stopped",
+                                "message": "Conversation stopped by user"
+                            })
+                            break  # Exit the WebSocket loop
+                        
                         elif command.get("action") == "stats":
                             logger.info("Sending conversation statistics")
                             stats = conversation.response_generator.get_statistics()

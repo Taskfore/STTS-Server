@@ -493,6 +493,11 @@ document.addEventListener('DOMContentLoaded', async function() {
                     this.updateConversationState('ready', 'Conversation reset.');
                     showNotification('Conversation reset successfully', 'success');
                     break;
+
+                case 'conversation_stopped':
+                    this.updateConversationState('ready', 'Conversation stopped by user.');
+                    console.log('Conversation stopped by server confirmation');
+                    break;
             }
         }
 
@@ -726,6 +731,12 @@ document.addEventListener('DOMContentLoaded', async function() {
 
         stopRecording() {
             try {
+                // Send stop message to server before cleaning up
+                if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                    this.websocket.send(JSON.stringify({ action: 'stop' }));
+                    console.log('Sent stop command to WebSocket server');
+                }
+
                 if (this.pcmProcessor) {
                     this.pcmProcessor.disconnect();
                     this.pcmProcessor = null;
