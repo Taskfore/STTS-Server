@@ -83,24 +83,7 @@ class ConversationResponseGenerator:
 
     def _generate_echo_response(self, input_text: str) -> str:
         """Generate echo-style responses."""
-        echo_patterns = [
-            f"I heard you say: {input_text}",
-            f"You said: {input_text}",
-            f"Did you say: {input_text}?",
-            f"I understand you said: {input_text}",
-            f"Let me repeat that: {input_text}",
-        ]
-
-        # Add some variety based on input length
-        if len(input_text) < 10:
-            echo_patterns.extend(
-                [
-                    f"'{input_text}' - got it!",
-                    f"I heard '{input_text}'",
-                ]
-            )
-
-        return random.choice(echo_patterns)
+        return input_text
 
     def _generate_template_response(
         self, input_text: str, context: Optional[Dict[str, Any]] = None
