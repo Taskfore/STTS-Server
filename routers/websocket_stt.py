@@ -108,6 +108,10 @@ class OptimizedAudioBuffer:
             samples_to_get = self.total_samples - start_sample_count
             
             if samples_to_get <= 0:
+                # Buffer position became invalid (buffer was cleaned), return all available audio
+                logger.warning(f"get_audio_since_sample: Invalid position (total={self.total_samples}, start={start_sample_count}), returning all available audio")
+                if self.chunks:
+                    return np.concatenate(list(self.chunks))
                 return np.array([], dtype=np.float32)
             
             # Collect chunks from the end working backwards
