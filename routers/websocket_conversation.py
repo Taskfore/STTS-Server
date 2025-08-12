@@ -110,6 +110,7 @@ class ConversationProcessor:
         self.last_transcription_time = 0
         self.conversation_state = "listening"  # "listening", "processing", "speaking"
         self.pending_audio_for_transcription = None
+        self.speech_start_buffer_size = 0  # Track buffer size when speech starts
 
         # Resolve voice path for TTS
         self.voice_path = self._resolve_voice_path()
@@ -187,6 +188,9 @@ class ConversationProcessor:
                     f"Speech started while in state '{self.conversation_state}' - resetting to listening"
                 )
             self.conversation_state = "listening"
+            # Mark the current buffer size when speech starts
+            self.speech_start_buffer_size = self.audio_buffer.total_samples
+            logger.info(f"Marked speech start at buffer size: {self.speech_start_buffer_size} samples")
             conversation_events.append("speech_start")
 
         # Handle speech end - trigger transcription and response
@@ -197,14 +201,15 @@ class ConversationProcessor:
             self.conversation_state = "processing"
             conversation_events.append("speech_end")
 
-            # Get recent audio for transcription
-            recent_audio = self.audio_buffer.get_recent_audio(duration_seconds=5.0)
-            if len(recent_audio) > 0:
+            # Get complete speech session audio (from speech start to now)
+            complete_speech_audio = self.audio_buffer.get_audio_since_sample(self.speech_start_buffer_size)
+            if len(complete_speech_audio) > 0:
+                speech_duration = len(complete_speech_audio) / self.audio_buffer.sample_rate
                 logger.info(
-                    f"Retrieved {len(recent_audio)} audio samples for transcription (last 5 seconds)"
+                    f"Retrieved {len(complete_speech_audio)} audio samples for transcription (complete {speech_duration:.2f}s speech session)"
                 )
                 # Process transcription and response in background
-                asyncio.create_task(self._process_speech_to_response(recent_audio))
+                asyncio.create_task(self._process_speech_to_response(complete_speech_audio))
             else:
                 logger.warning(
                     "No audio samples available for transcription despite speech_end event"

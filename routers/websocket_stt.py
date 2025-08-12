@@ -98,6 +98,43 @@ class OptimizedAudioBuffer:
                 return np.concatenate(collected_chunks)
             return np.array([], dtype=np.float32)
     
+    def get_audio_since_sample(self, start_sample_count: int) -> np.ndarray:
+        """Get all audio data since a specific sample count position."""
+        with self.lock:
+            if not self.chunks:
+                return np.array([], dtype=np.float32)
+            
+            # Calculate how many samples to skip from the beginning
+            samples_to_get = self.total_samples - start_sample_count
+            
+            if samples_to_get <= 0:
+                return np.array([], dtype=np.float32)
+            
+            # Collect chunks from the end working backwards
+            collected_chunks = []
+            collected_samples = 0
+            
+            # Work backwards from most recent chunks
+            for chunk in reversed(self.chunks):
+                collected_chunks.insert(0, chunk)
+                collected_samples += len(chunk)
+                
+                # Stop when we have enough samples
+                if collected_samples >= samples_to_get:
+                    break
+            
+            if not collected_chunks:
+                return np.array([], dtype=np.float32)
+            
+            # Concatenate and trim to exact sample count if needed
+            full_audio = np.concatenate(collected_chunks)
+            
+            # Trim from the beginning if we collected too much
+            if len(full_audio) > samples_to_get:
+                full_audio = full_audio[-samples_to_get:]
+            
+            return full_audio
+    
     def clear(self):
         """Clear the audio buffer."""
         with self.lock:
