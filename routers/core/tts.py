@@ -13,9 +13,21 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-# Import existing components for compatibility
-import engine  # Will be replaced with library adapter later
+# Library imports (with fallback to adapters)
+try:
+    from realtime_conversation.adapters.tts import ChatterboxTTSEngine
+    LIBRARY_AVAILABLE = True
+except ImportError:
+    LIBRARY_AVAILABLE = False
+    ChatterboxTTSEngine = None
+
+# Import adapter and legacy engine
+from adapters.legacy_engines import LegacyTTSEngineAdapter, create_legacy_tts_adapter
+import engine  # Legacy engine (to be phased out)
 import utils
+
+# Import middleware system
+from middleware.base import MiddlewarePipeline, RequestContext, TimingMiddleware, LoggingMiddleware, AnalyticsMiddleware
 from config import (
     get_predefined_voices_path,
     get_reference_audio_path,
@@ -33,6 +45,55 @@ from models import CustomTTSRequest, ErrorResponse
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tts", tags=["Text-to-Speech"])
+
+# Global adapter instance (will be replaced with proper DI later)
+_tts_adapter_instance: Optional[LegacyTTSEngineAdapter] = None
+_middleware_pipeline: Optional[MiddlewarePipeline] = None
+
+
+def get_tts_adapter() -> LegacyTTSEngineAdapter:
+    """
+    Dependency to get TTS adapter.
+    
+    This uses the adapter pattern to bridge between legacy engines and the new library interface.
+    When the library is fully integrated, this will switch to native library engines.
+    """
+    global _tts_adapter_instance
+    
+    if _tts_adapter_instance is None:
+        if LIBRARY_AVAILABLE:
+            # TODO: Use native ChatterboxTTSEngine when fully integrated
+            logger.info("Library available but using legacy adapter for compatibility")
+            _tts_adapter_instance = create_legacy_tts_adapter()
+        else:
+            logger.info("Using legacy TTS adapter")
+            _tts_adapter_instance = create_legacy_tts_adapter()
+    
+    return _tts_adapter_instance
+
+
+def get_middleware_pipeline() -> MiddlewarePipeline:
+    """Get or create the middleware pipeline for TTS processing."""
+    global _middleware_pipeline
+    
+    if _middleware_pipeline is None:
+        _middleware_pipeline = MiddlewarePipeline()
+        
+        # Add built-in middleware based on configuration
+        if config_manager.get_bool("server.enable_performance_monitor", False):
+            _middleware_pipeline.add_middleware(TimingMiddleware())
+        
+        # Always add logging middleware
+        log_level = logging.INFO if config_manager.get_string("server.log_level", "INFO") == "INFO" else logging.DEBUG
+        _middleware_pipeline.add_middleware(LoggingMiddleware(log_level=log_level))
+        
+        # Add analytics if enabled
+        if config_manager.get_bool("analytics.enable", False):
+            _middleware_pipeline.add_middleware(AnalyticsMiddleware())
+        
+        logger.info(f"TTS middleware pipeline initialized with {_middleware_pipeline.enabled_middleware_count} middleware")
+    
+    return _middleware_pipeline
 
 
 class OpenAISpeechRequest(BaseModel):
@@ -73,60 +134,103 @@ class OpenAISpeechRequest(BaseModel):
     },
 )
 async def synthesize_speech(
-    request: CustomTTSRequest, background_tasks: BackgroundTasks
+    request: CustomTTSRequest, 
+    background_tasks: BackgroundTasks,
+    tts_adapter: LegacyTTSEngineAdapter = Depends(get_tts_adapter),
+    middleware_pipeline: MiddlewarePipeline = Depends(get_middleware_pipeline)
 ):
     """
     Generates speech audio from text using specified parameters.
     Handles various voice modes (predefined, clone) and audio processing options.
     Returns audio as a stream (WAV, Opus, or MP3).
     """
-    perf_monitor = utils.PerformanceMonitor(
-        enabled=config_manager.get_bool("server.enable_performance_monitor", False)
+    # Create request context for middleware
+    import uuid
+    context = RequestContext(
+        request_id=str(uuid.uuid4())[:8],
+        request_type="tts"
     )
-    perf_monitor.record("TTS request received")
+    
+    # Add input data to context
+    context.input_data.update({
+        "text": request.text,
+        "voice_mode": request.voice_mode,
+        "voice_id": request.predefined_voice_id or request.reference_audio_filename,
+        "output_format": request.output_format or get_audio_output_format(),
+        "temperature": request.temperature,
+        "exaggeration": request.exaggeration,
+        "cfg_weight": request.cfg_weight,
+        "seed": request.seed,
+        "speed_factor": request.speed_factor,
+        "split_text": request.split_text,
+        "chunk_size": request.chunk_size
+    })
 
-    if not engine.MODEL_LOADED:
-        logger.error("TTS request failed: Model not loaded.")
-        raise HTTPException(
-            status_code=503,
-            detail="TTS engine model is not currently loaded or available.",
-        )
+    # Define core TTS processing function for middleware
+    async def core_tts_processing(ctx: RequestContext) -> RequestContext:
+        """Core TTS processing wrapped for middleware."""
+        
+        if not tts_adapter.model_loaded:
+            raise HTTPException(
+                status_code=503,
+                detail="TTS engine model is not currently loaded or available.",
+            )
 
-    logger.info(
-        f"Received TTS request: mode='{request.voice_mode}', format='{request.output_format}'"
-    )
-    logger.debug(
-        f"TTS params: seed={request.seed}, split={request.split_text}, chunk_size={request.chunk_size}"
-    )
-    logger.debug(f"Input text (first 100 chars): '{request.text[:100]}...'")
+        try:
+            # Resolve voice path
+            audio_prompt_path_for_engine = _resolve_voice_path(request)
+            ctx.add_metadata("voice_path_resolved", True)
 
+            # Process text and generate audio
+            audio_segments = await _process_text_chunks(request, audio_prompt_path_for_engine, tts_adapter, ctx)
+            
+            # Concatenate and post-process audio
+            final_audio_np = _concatenate_and_process_audio(audio_segments, ctx)
+            
+            # Add output data to context
+            ctx.output_data.update({
+                "audio_array": final_audio_np,
+                "audio_size": len(final_audio_np.tobytes()) if hasattr(final_audio_np, 'tobytes') else 0,
+                "sample_rate": 22050  # Chatterbox default
+            })
+            
+            return ctx
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in TTS synthesis: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"TTS synthesis error: {str(e)}")
+    
+    # Process through middleware pipeline
     try:
-        # Resolve voice path
-        audio_prompt_path_for_engine = _resolve_voice_path(request)
-        perf_monitor.record("Voice path resolved")
-
-        # Process text and generate audio
-        audio_segments = await _process_text_chunks(request, audio_prompt_path_for_engine, perf_monitor)
+        result_context = await middleware_pipeline.process(context, core_tts_processing)
         
-        # Concatenate and post-process audio
-        final_audio_np = _concatenate_and_process_audio(audio_segments, perf_monitor)
+        if result_context.status == "error" or result_context.error:
+            error = result_context.error or Exception("Unknown error in TTS processing")
+            if isinstance(error, HTTPException):
+                raise error
+            else:
+                raise HTTPException(status_code=500, detail=str(error))
         
-        # Encode and return response
-        return _create_streaming_response(
-            final_audio_np, 
-            request.output_format or get_audio_output_format(),
-            perf_monitor
-        )
+        # Create streaming response from result
+        final_audio_np = result_context.output_data["audio_array"]
+        output_format = request.output_format or get_audio_output_format()
+        
+        return _create_streaming_response_from_context(final_audio_np, output_format, result_context)
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Unexpected error in TTS synthesis: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"TTS synthesis error: {str(e)}")
+        logger.error(f"Middleware processing error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"TTS processing error: {str(e)}")
 
 
 @router.post("/v1/audio/speech", tags=["OpenAI Compatible"])
-async def openai_speech_endpoint(request: OpenAISpeechRequest):
+async def openai_speech_endpoint(
+    request: OpenAISpeechRequest,
+    tts_adapter: LegacyTTSEngineAdapter = Depends(get_tts_adapter)
+):
     """
     OpenAI-compatible speech synthesis endpoint.
     Provides compatibility with OpenAI's text-to-speech API.
@@ -141,33 +245,37 @@ async def openai_speech_endpoint(request: OpenAISpeechRequest):
             )
 
         # Check if TTS model is loaded
-        if not engine.MODEL_LOADED:
+        if not tts_adapter.model_loaded:
             raise HTTPException(
                 status_code=503,
                 detail="TTS engine model is not currently loaded or available.",
             )
 
-        # Synthesize audio using engine
-        audio_tensor, sample_rate = engine.synthesize(
-            text=request.input_,
-            audio_prompt_path=str(voice_path),
-            temperature=get_gen_default_temperature(),
-            exaggeration=get_gen_default_exaggeration(),
-            cfg_weight=get_gen_default_cfg_weight(),
-            seed=request.seed if request.seed is not None else get_gen_default_seed(),
-        )
+        # Build voice configuration
+        voice_config = {
+            "voice_path": str(voice_path),
+            "voice_id": voice_path.name if voice_path else None,
+            "temperature": get_gen_default_temperature(),
+            "exaggeration": get_gen_default_exaggeration(),
+            "cfg_weight": get_gen_default_cfg_weight(),
+            "seed": request.seed if request.seed is not None else get_gen_default_seed(),
+            "speed_factor": request.speed,
+        }
 
-        if audio_tensor is None or sample_rate is None:
+        # Synthesize audio using adapter
+        synthesis_result = await tts_adapter.synthesize(request.input_, voice_config)
+
+        if synthesis_result is None or synthesis_result.audio_data is None:
             raise HTTPException(
-                status_code=500, detail="TTS engine failed to synthesize audio."
+                status_code=500, detail="TTS adapter failed to synthesize audio."
             )
 
-        # Apply speed factor
-        if request.speed != 1.0:
-            audio_tensor, _ = utils.apply_speed_factor(audio_tensor, sample_rate, request.speed)
+        # Get audio data
+        audio_data = synthesis_result.audio_data.data
+        sample_rate = synthesis_result.audio_data.sample_rate
 
-        # Convert to numpy and encode
-        audio_np = audio_tensor.cpu().numpy().squeeze()
+        # Convert to numpy for encoding
+        audio_np = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
         encoded_audio = utils.encode_audio(
             audio_array=audio_np,
             sample_rate=sample_rate,
@@ -255,7 +363,8 @@ def _resolve_openai_voice_path(voice_name: str) -> Optional[Path]:
 async def _process_text_chunks(
     request: CustomTTSRequest, 
     voice_path: Optional[Path], 
-    perf_monitor: utils.PerformanceMonitor
+    tts_adapter: LegacyTTSEngineAdapter,
+    context: RequestContext
 ) -> List[np.ndarray]:
     """Process text into chunks and synthesize each chunk."""
     
@@ -269,7 +378,7 @@ async def _process_text_chunks(
         chunk_size = request.chunk_size if request.chunk_size is not None else 120
         logger.info(f"Splitting text into chunks of size ~{chunk_size}.")
         text_chunks = utils.chunk_text_by_sentences(request.text, chunk_size)
-        perf_monitor.record(f"Text split into {len(text_chunks)} chunks")
+        context.add_metadata("text_chunks", len(text_chunks))
     else:
         text_chunks = [request.text]
         logger.info("Processing text as a single chunk")
@@ -285,23 +394,30 @@ async def _process_text_chunks(
     for i, chunk in enumerate(text_chunks):
         logger.info(f"Synthesizing chunk {i+1}/{len(text_chunks)}...")
         try:
-            # Synthesize chunk
-            chunk_audio_tensor, chunk_sr = engine.synthesize(
-                text=chunk,
-                audio_prompt_path=str(voice_path) if voice_path else None,
-                temperature=request.temperature if request.temperature is not None else get_gen_default_temperature(),
-                exaggeration=request.exaggeration if request.exaggeration is not None else get_gen_default_exaggeration(),
-                cfg_weight=request.cfg_weight if request.cfg_weight is not None else get_gen_default_cfg_weight(),
-                seed=request.seed if request.seed is not None else get_gen_default_seed(),
-            )
-            perf_monitor.record(f"Engine synthesized chunk {i+1}")
+            # Build voice config for adapter
+            voice_config = {
+                "voice_path": str(voice_path) if voice_path else None,
+                "voice_id": voice_path.name if voice_path else None,
+                "temperature": request.temperature if request.temperature is not None else get_gen_default_temperature(),
+                "exaggeration": request.exaggeration if request.exaggeration is not None else get_gen_default_exaggeration(),
+                "cfg_weight": request.cfg_weight if request.cfg_weight is not None else get_gen_default_cfg_weight(),
+                "seed": request.seed if request.seed is not None else get_gen_default_seed(),
+                "speed_factor": request.speed_factor if request.speed_factor is not None else get_gen_default_speed_factor(),
+            }
+            
+            # Synthesize chunk using adapter
+            synthesis_result = await tts_adapter.synthesize(chunk, voice_config)
+            context.add_metadata(f"chunk_{i+1}_synthesized", True)
 
-            if chunk_audio_tensor is None or chunk_sr is None:
+            if synthesis_result is None or synthesis_result.audio_data is None:
                 raise HTTPException(
                     status_code=500, 
-                    detail=f"TTS engine failed to synthesize audio for chunk {i+1}."
+                    detail=f"TTS adapter failed to synthesize audio for chunk {i+1}."
                 )
 
+            # Get audio data from synthesis result
+            chunk_sr = synthesis_result.audio_data.sample_rate
+            
             if engine_sample_rate is None:
                 engine_sample_rate = chunk_sr
             elif engine_sample_rate != chunk_sr:
@@ -309,15 +425,10 @@ async def _process_text_chunks(
                     f"Inconsistent sample rate: chunk {i+1} ({chunk_sr}Hz) differs from previous ({engine_sample_rate}Hz)"
                 )
 
-            # Apply speed factor if specified
-            processed_audio = chunk_audio_tensor
-            speed_factor = request.speed_factor if request.speed_factor is not None else get_gen_default_speed_factor()
-            if speed_factor != 1.0:
-                processed_audio, _ = utils.apply_speed_factor(processed_audio, chunk_sr, speed_factor)
-                perf_monitor.record(f"Speed factor applied to chunk {i+1}")
-
-            # Convert to numpy and add to segments
-            audio_np = processed_audio.cpu().numpy().squeeze()
+            # Convert AudioData to numpy array
+            # The adapter already applied speed factor during synthesis
+            audio_bytes = synthesis_result.audio_data.data
+            audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
             audio_segments.append(audio_np)
 
         except HTTPException:
@@ -331,7 +442,7 @@ async def _process_text_chunks(
 
 def _concatenate_and_process_audio(
     audio_segments: List[np.ndarray], 
-    perf_monitor: utils.PerformanceMonitor
+    context: RequestContext
 ) -> np.ndarray:
     """Concatenate audio segments and apply global post-processing."""
     
@@ -340,25 +451,73 @@ def _concatenate_and_process_audio(
 
     # Concatenate segments
     final_audio_np = np.concatenate(audio_segments) if len(audio_segments) > 1 else audio_segments[0]
-    perf_monitor.record("Audio segments concatenated")
+    context.add_metadata("audio_segments_concatenated", len(audio_segments))
 
     # Apply global audio processing
     sample_rate = 22050  # Chatterbox default sample rate
     
     if config_manager.get_bool("audio_processing.enable_silence_trimming", False):
         final_audio_np = utils.trim_lead_trail_silence(final_audio_np, sample_rate)
-        perf_monitor.record("Silence trimming applied")
+        context.add_metadata("silence_trimming_applied", True)
 
     if config_manager.get_bool("audio_processing.enable_internal_silence_fix", False):
         final_audio_np = utils.fix_internal_silence(final_audio_np, sample_rate)
-        perf_monitor.record("Internal silence fix applied")
+        context.add_metadata("internal_silence_fix_applied", True)
 
     if (config_manager.get_bool("audio_processing.enable_unvoiced_removal", False) 
         and utils.PARSELMOUTH_AVAILABLE):
         final_audio_np = utils.remove_long_unvoiced_segments(final_audio_np, sample_rate)
-        perf_monitor.record("Unvoiced removal applied")
+        context.add_metadata("unvoiced_removal_applied", True)
 
     return final_audio_np
+
+
+def _create_streaming_response_from_context(
+    audio_np: np.ndarray, 
+    output_format: str, 
+    context: RequestContext
+) -> StreamingResponse:
+    """Create streaming response with encoded audio using context data."""
+    
+    sample_rate = 22050  # Chatterbox output sample rate
+    target_sample_rate = get_audio_sample_rate()
+    
+    # Encode audio
+    encoded_audio_bytes = utils.encode_audio(
+        audio_array=audio_np,
+        sample_rate=sample_rate,
+        output_format=output_format,
+        target_sample_rate=target_sample_rate,
+    )
+    context.add_metadata("audio_encoded", True)
+
+    if encoded_audio_bytes is None or len(encoded_audio_bytes) < 100:
+        logger.error(f"Failed to encode audio to {output_format} or output too small")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to encode audio to {output_format} or generated invalid audio.",
+        )
+
+    # Add final output data to context
+    context.output_data.update({
+        "encoded_audio_size": len(encoded_audio_bytes),
+        "output_format": output_format,
+        "audio_duration_ms": len(audio_np) / sample_rate * 1000 if len(audio_np) > 0 else 0
+    })
+
+    # Create response
+    media_type = f"audio/{output_format}"
+    timestamp_str = time.strftime("%Y%m%d_%H%M%S")
+    filename = utils.sanitize_filename(f"tts_output_{timestamp_str}.{output_format}")
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+
+    logger.info(f"TTS synthesis completed via middleware: {filename}, {len(encoded_audio_bytes)} bytes, duration: {context.duration_ms:.2f}ms")
+
+    return StreamingResponse(
+        io.BytesIO(encoded_audio_bytes), 
+        media_type=media_type, 
+        headers=headers
+    )
 
 
 def _create_streaming_response(
@@ -479,3 +638,99 @@ async def get_voice_info(voice_id: str):
     except Exception as e:
         logger.error(f"Error getting voice info: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get voice information")
+
+
+@router.get("/middleware/status", summary="TTS middleware status")
+async def get_middleware_status(
+    middleware_pipeline: MiddlewarePipeline = Depends(get_middleware_pipeline)
+):
+    """Get status and statistics for TTS middleware pipeline."""
+    try:
+        middleware_info = []
+        
+        for middleware in middleware_pipeline.middleware:
+            info = {
+                "name": middleware.name,
+                "enabled": middleware.enabled,
+                "type": type(middleware).__name__
+            }
+            
+            # Get statistics if available
+            if hasattr(middleware, 'get_statistics'):
+                try:
+                    info["statistics"] = middleware.get_statistics()
+                except Exception as e:
+                    info["statistics_error"] = str(e)
+            
+            middleware_info.append(info)
+        
+        return {
+            "total_middleware": len(middleware_pipeline.middleware),
+            "enabled_middleware": middleware_pipeline.enabled_middleware_count,
+            "middleware_names": middleware_pipeline.get_middleware_names(),
+            "middleware_details": middleware_info
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting middleware status: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get middleware status")
+
+
+@router.post("/middleware/reload", summary="Reload TTS middleware")
+async def reload_middleware():
+    """Reload the TTS middleware pipeline."""
+    global _middleware_pipeline
+    
+    try:
+        # Clear current pipeline
+        _middleware_pipeline = None
+        
+        # Create new pipeline (this will reinitialize with current config)
+        new_pipeline = get_middleware_pipeline()
+        
+        return {
+            "status": "success",
+            "message": "TTS middleware pipeline reloaded",
+            "enabled_middleware": new_pipeline.enabled_middleware_count,
+            "middleware_names": new_pipeline.get_middleware_names()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error reloading middleware: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to reload middleware: {str(e)}")
+
+
+@router.get("/statistics", summary="TTS system statistics")
+async def get_tts_statistics(
+    middleware_pipeline: MiddlewarePipeline = Depends(get_middleware_pipeline),
+    tts_adapter: LegacyTTSEngineAdapter = Depends(get_tts_adapter)
+):
+    """Get comprehensive TTS system statistics."""
+    try:
+        stats = {
+            "system": {
+                "adapter_type": type(tts_adapter).__name__,
+                "model_loaded": tts_adapter.model_loaded,
+                "library_available": LIBRARY_AVAILABLE
+            },
+            "middleware": {
+                "total_count": len(middleware_pipeline.middleware),
+                "enabled_count": middleware_pipeline.enabled_middleware_count,
+                "middleware_names": middleware_pipeline.get_middleware_names()
+            }
+        }
+        
+        # Collect middleware statistics
+        for middleware in middleware_pipeline.middleware:
+            if hasattr(middleware, 'get_statistics'):
+                try:
+                    middleware_stats = middleware.get_statistics()
+                    stats["middleware"][middleware.name] = middleware_stats
+                except Exception as e:
+                    stats["middleware"][f"{middleware.name}_error"] = str(e)
+        
+        return stats
+        
+    except Exception as e:
+        logger.error(f"Error getting TTS statistics: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get TTS statistics")

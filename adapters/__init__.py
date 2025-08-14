@@ -1,0 +1,1 @@
+# Adapters for integrating existing engines with realtime_conversation library

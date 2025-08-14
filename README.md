@@ -47,6 +47,8 @@ The server expects plain text input for synthesis and we solve the complexity of
 
 This server is your gateway to leveraging Chatterbox's TTS capabilities seamlessly, with enhanced stability, voice consistency, and large text support for plain text inputs.
 
+> 🆕 **New Library Integration (v2.1.0)**: Enhanced with adapter patterns, middleware pipeline, and comprehensive monitoring. See the [📚 Library Integration Documentation](#-library-integration-documentation) section below for details.
+
 ## ✨ Key Features of This Server
 
 **🔥 Live Demo Available:**
@@ -742,6 +744,47 @@ sudo rm -rf voices/ reference_audio/ outputs/ logs/ config.yaml
 
 # View volume usage
 docker system df
+```
+
+## 📚 Library Integration Documentation
+
+**New in v2.1.0**: The STTS Server now features a comprehensive library integration system with enhanced architecture, monitoring, and enterprise-grade patterns. 
+
+### 📖 Complete Documentation Suite
+
+For detailed information about the new library integration system, see the comprehensive documentation in the `/docs` directory:
+
+- **[📋 Documentation Overview](docs/README.md)** - Complete guide to the library integration system
+- **[🏗️ Architecture](docs/architecture.md)** - System design and component relationships  
+- **[🔧 Adapter Pattern](docs/adapters.md)** - Bridge adapters for legacy engine integration
+- **[⚙️ Middleware System](docs/middleware.md)** - Request processing pipeline and built-in middleware
+- **[🗂️ Router Organization](docs/routers.md)** - Clean router structure and responsibilities
+- **[📡 API Reference](docs/api-reference.md)** - Comprehensive endpoint documentation
+- **[⚙️ Configuration](docs/configuration.md)** - Enhanced configuration management
+- **[📊 Monitoring & Analytics](docs/monitoring.md)** - Performance tracking and usage analytics
+- **[🚀 Migration Guide](docs/migration.md)** - Moving from legacy to library-integrated architecture
+- **[💻 Development Guide](docs/development.md)** - Adding new features and extending the system
+
+### 🆕 New Features (Library Integration)
+
+- **🔧 Adapter Pattern**: Clean interfaces between legacy engines and library protocols
+- **⚙️ Middleware Pipeline**: Complete request lifecycle management with timing, logging, analytics  
+- **📊 Enhanced Monitoring**: Request context, performance metrics, usage analytics
+- **🏗️ Clean Architecture**: Organized routers with focused responsibilities
+- **🔒 Backward Compatibility**: All existing endpoints continue to work
+- **📈 Advanced Analytics**: Voice usage patterns, format preferences, system insights
+
+### 🚀 Quick Start (Library Integration)
+
+```bash
+# Run the new library-integrated server
+python server_v2.py
+
+# Server available at http://localhost:8004
+# Enhanced API documentation at http://localhost:8004/docs
+
+# Test library integration
+python test_library_integration.py
 ```
 
 ## 🔍 Troubleshooting
